@@ -10,6 +10,8 @@ const byte height = 5;
 const boolean reverseWidth = false; // Q0 should be the leftmost led, if not, set to true
 const boolean reverseHeight = false; // same usage, but for the height
 
+volatile int updateCounter = 0; // the counter that drives the LED matrix display
+
 /* Dual Shift Register diagram:
     REG ONE               REG TWO
      0                    8
@@ -37,17 +39,20 @@ const byte dataInPin = 10; // Pin 9 of the register: the input pin that the data
 
 const byte speakerPin = 13; // speaker pin
 
+const byte updatePeriod = 10; // in microseconds
+const byte GSdutyCycle[][2] = { {0, 0}, {1, 2}, {2, 4}, {3, 8}}; // {greyscale value, updatePeriod*scaler}
+
 // the pixel representation of the screen
 byte pixels[35] = {
-  3, 3, 3, 3, 3, 3, 3,
-  3, 3, 3, 3, 3, 3, 3,
-  3, 3, 3, 3, 3, 3, 3,
-  3, 3, 3, 3, 3, 3, 3,
-  3, 3, 3, 3, 3, 3, 3
+  0, 3, 0, 3, 0, 3, 0,
+  0, 3, 0, 3, 0, 3, 0,
+  0, 3, 0, 3, 0, 3, 0,
+  0, 3, 0, 3, 0, 3, 0,
+  0, 3, 0, 3, 0, 3, 0
 };
 
 
-// RGBLed rgbLed = new RGBLed
+// RGBLed rgbLed = new RGBLed(255, 255, 0);
 
 
 // forward declaration of timer functions
@@ -55,11 +60,9 @@ void meeper();
 void getBatt();
 void calcStreamers();
 
-
-
 Timer meep(*meeper, 2000, false);
 Timer battCheck(*getBatt, 4000, true);
-Timer strUpdate(*calcStreamers, 100, true);
+Timer strUpdate(*calcStreamers, 200, false);
 
 Timer timers[] = {meep, battCheck, strUpdate}; // array of all Timer objects
 
@@ -108,8 +111,6 @@ boolean rightPress = false;
 boolean alphaPress = false;
 boolean betaPress = false;
 
-
-
 // the alphabet: each row is two letters
 const byte alphabet[20] = {
   105, 159, 158, 158, 158,
@@ -139,11 +140,21 @@ void setup() {
   pinMode(battPin, INPUT);
   pinMode(lowBattPin, INPUT);
 
-  // setting up interupt timer to run every 1 ms
+  // setting up interupt timer 0 to run every 1 ms
   OCR0A = 0xAF;
-  TIMSK0 |= _BV(OCIE0A);
+  TIMSK0 |= (1 << OCIE0A); // enabling compare interrupt
 
-  displayPixels();
+  // 20,000 HZ for 50 microseconds
+
+  byte compareMatchRegister = (16000000) / (1000000 / updatePeriod) - 1; // (must be <65536)
+  TCCR1A = 0; // clearing timer 1 registers
+  TCCR1B = 0;
+  OCR1A = compareMatchRegister;
+  TCCR1B |= (1 << WGM12); // turn onCTC mode
+  TCCR1B |= (1 << CS10); // setting CS10 bit for 1 prescaling (none)
+  TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
+
+  //displayPixels();
 }
 
 void loop() {
@@ -281,7 +292,7 @@ void displayPixels() {
       hData = hData << 1; // shifting the "1" over one place left (binary rules)
     }
   }
-  displayPixels();
+  // displayPixels();
 }
 
 void shiftLeft(byte a, byte b, byte c, byte d, byte e) {
@@ -329,9 +340,13 @@ void writeMatrixRegisters(byte w, byte h) { // w should be non inverted
 }
 
 void resetRegisters() { // i say dont use it
-  writeRegister(255); // second register
+  digitalWrite(enablePin, HIGH); // disable output
+  writeRegister(240); // second register
   writeRegister(7); // first register
   // 0000 0111   1111 1111
+
+  digitalWrite(enablePin, LOW); // enable
+
 }
 
 // takes in a byte of data and stores it in the button booleans
@@ -382,7 +397,7 @@ void writeRegister(byte dataIn) {
   digitalWrite(latchPin, HIGH);
 }
 
-SIGNAL(TIMER0_COMPA_vect) { // Interrupt timer runs every 1 ms
+ISR(TIMER0_COMPA_vect) { // Interrupt timer runs every 1 ms
 
   unsigned long currentMillis = millis();
 
@@ -395,6 +410,34 @@ SIGNAL(TIMER0_COMPA_vect) { // Interrupt timer runs every 1 ms
     Serial.print(currentMillis / 1000);
     Serial.println(" seconds since startup");
   }
+}
+
+ISR(TIMER1_COMPA_vect) {
+  // runs every updatePeriod microseconds
+  updateCounter %= (width * height * 4 * 32); // rollover reset
+
+  //noInterrupts();
+  //interrupts();
+
+  byte pixelState = (updateCounter % (width * height * 4)) / 4; // 0 - 34, the pixel # are we on
+  byte greyScaleState = updateCounter % 4; // 0 - 3, every 4 cycles
+  byte rgbState = updateCounter % 32; // 0 - 31, the RGB led states PWM 32
+  byte greyScaleValue = pixels[pixelState]; // getting the greyscale value (0 - 3)
+
+//  Serial.println(updateCounter);
+//  Serial.print(greyScaleState);
+//  Serial.print(", ");
+//  Serial.println(greyScaleValue);
+
+  if (greyScaleValue != 0 && greyScaleValue >= greyScaleState) {
+    byte wData = 1 << (pixelState % width); // width data (7 bits) enable LOW   0b0111 1111
+    byte hData = 1 << (pixelState / width); // height data (5 bits) enable HIGH 0b0001 1111
+    writeMatrixRegisters(wData, hData);
+  } else {
+    resetRegisters();
+  }
+
+  updateCounter++;
 }
 
 
