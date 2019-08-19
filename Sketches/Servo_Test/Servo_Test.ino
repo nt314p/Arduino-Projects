@@ -6,7 +6,12 @@ int servoSpeed = 2;
 int pos = 0;
 
 int analogPin = A0;
-float val = 0;
+float val = 100;
+float prevVal = 100;
+
+const int maxRepeatedNoise = 5;
+int repeatedNoise = 0;
+float realVal = 124;
 
 void setup() {
   // put your setup code here, to run once:
@@ -21,8 +26,15 @@ void setup() {
 void loop() {
 
   val = analogRead(analogPin);     // read the input pin
+  val = analogRead(analogPin);     // read the input pin
+  val = analogRead(analogPin);     // read the input pin
+
+  if (val > 145 || abs(val-prevVal) > 20) {
+    val = prevVal;
+  }
+  prevVal = val;
   Serial.println(val);
-  delay(100);
+  delay(50);
   //
   //  servo.write(0);
   //  delay(1000);
