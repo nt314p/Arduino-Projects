@@ -1,23 +1,11 @@
-#include <Wire.h>
-
 /*
    Arduino and MPU6050 Accelerometer and Gyroscope Sensor Tutorial
    by Dejan, https://howtomechatronics.com
 */
 
-struct Vector3 {
-  float x;
-  float y;
-  float z;
-};
+#include <Wire.h>
 
-#define MPU 0x68 // MPU address
-#define MPU_PWR_MGMT_1 0x6B
-#define MPU_DEVICE_RESET 0b00000001 // bit banging is MSB first
-
-Vector3 rotV, rotP, posA;
-
-
+const int MPU = 0x68; // MPU6050 I2C address
 float AccX, AccY, AccZ;
 float GyroX, GyroY, GyroZ;
 float accAngleX, accAngleY, gyroAngleX, gyroAngleY, gyroAngleZ;
@@ -27,26 +15,28 @@ float elapsedTime, currentTime, previousTime;
 int c = 0;
 
 void setup() {
-  Serial.begin(38400); // for bluetooth module HC-05
-
-  resetMPU6050();
-
+  Serial.begin(19200);
+  Wire.begin();                      // Initialize comunication
+  Wire.beginTransmission(MPU);       // Start communication with MPU6050 // MPU=0x68
+  Wire.write(0x6B);                  // Talk to the register 6B
+  Wire.write(0x00);                  // Make reset - place a 0 into the 6B register
+  Wire.endTransmission(true);        //end the transmission
   /*
-    // Configure Accelerometer Sensitivity - Full Scale Range (default +/- 2g)
-    Wire.beginTransmission(MPU);
-    Wire.write(0x1C);                  //Talk to the ACCEL_CONFIG register (1C hex)
-    Wire.write(0x10);                  //Set the register bits as 00010000 (+/- 8g full scale range)
-    Wire.endTransmission(true);
-    // Configure Gyro Sensitivity - Full Scale Range (default +/- 250deg/s)
-    Wire.beginTransmission(MPU);
-    Wire.write(0x1B);                   // Talk to the GYRO_CONFIG register (1B hex)
-    Wire.write(0x10);                   // Set the register bits as 00010000 (1000deg/s full scale)
-    Wire.endTransmission(true);
-    delay(20);
+  // Configure Accelerometer Sensitivity - Full Scale Range (default +/- 2g)
+  Wire.beginTransmission(MPU);
+  Wire.write(0x1C);                  //Talk to the ACCEL_CONFIG register (1C hex)
+  Wire.write(0x10);                  //Set the register bits as 00010000 (+/- 8g full scale range)
+  Wire.endTransmission(true);
+  // Configure Gyro Sensitivity - Full Scale Range (default +/- 250deg/s)
+  Wire.beginTransmission(MPU);
+  Wire.write(0x1B);                   // Talk to the GYRO_CONFIG register (1B hex)
+  Wire.write(0x10);                   // Set the register bits as 00010000 (1000deg/s full scale)
+  Wire.endTransmission(true);
+  delay(20);
   */
   // Call this function if you need to get the IMU error values for your module
   calculate_IMU_error();
-  delay(2000);
+  delay(20);
 
 }
 
@@ -95,19 +85,6 @@ void loop() {
   Serial.print(pitch);
   Serial.print("/");
   Serial.println(yaw);
-}
-
-void readAccelerometerData() {
-  Wire.beginTransmission(MPU);
-  Wire.write(0x3B); // Start with register 0x3B (ACCEL_XOUT_H)
-}
-
-void resetMPU6050() {
-  Wire.begin();
-  Wire.beginTransmission(MPU);
-  Wire.write(MPU_PWR_MGMT_1); // select the power management register
-  Wire.write(MPU_DEVICE_RESET); // reset device
-  Wire.endTransmission(true);
 }
 
 
