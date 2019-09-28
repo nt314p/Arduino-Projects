@@ -39,32 +39,35 @@ const byte dataInPin = 10; // Pin 9 of the register: the input pin that the data
 
 const byte speakerPin = 13; // speaker pin
 
-const byte updatePeriod = 10; // in microseconds
-const byte GSdutyCycle[][2] = { {0, 0}, {1, 2}, {2, 4}, {3, 8}}; // {greyscale value, updatePeriod*scaler}
+const byte updatePeriod = 3000; // in microseconds
+//const byte GSdutyCycle[][2] = { {0, 0}, {1, 2}, {2, 4}, {3, 8}}; // {greyscale value, updatePeriod*scaler}
 
 // the pixel representation of the screen
 byte pixels[35] = {
+  3, 0, 3, 0, 3, 0, 3,
   0, 3, 0, 3, 0, 3, 0,
+  0, 0, 3, 0, 3, 0, 3,
   0, 3, 0, 3, 0, 3, 0,
-  0, 3, 0, 3, 0, 3, 0,
-  0, 3, 0, 3, 0, 3, 0,
-  0, 3, 0, 3, 0, 3, 0
+  3, 0, 3, 0, 3, 0, 3
 };
 
 
 // RGBLed rgbLed = new RGBLed(255, 255, 0);
+unsigned int dispInterval = 100;
 
 
 // forward declaration of timer functions
 void meeper();
 void getBatt();
 void calcStreamers();
+void updateButtons();
 
-Timer meep(*meeper, 2000, false);
-Timer battCheck(*getBatt, 4000, true);
+Timer meep(*meeper, 150, true);
+Timer battCheck(*getBatt, 4000, false);
 Timer strUpdate(*calcStreamers, 200, false);
+Timer buttonUpdate(*updateButtons, 200, true);
 
-Timer timers[] = {meep, battCheck, strUpdate}; // array of all Timer objects
+Timer timers[] = {meep, battCheck, strUpdate, buttonUpdate}; // array of all Timer objects
 
 // battery monitor pin (raw)
 const byte battPin = 14; // A0
@@ -78,6 +81,7 @@ int ivalApp = 200;
 
 int letterplace = 0;
 
+
 // debug input a1:
 int monPin = A1;
 
@@ -88,11 +92,11 @@ int dir = 0; // which direction in the streamer going in? -1, 0, 1
 
 // menu
 byte menuIcons[35] = {
-  0, 0, 3, 3, 3, 0, 0,
-  0, 3, 0, 0, 0, 3, 0,
-  0, 3, 0, 3, 0, 3, 0,
-  0, 3, 0, 0, 0, 3, 0,
-  0, 0, 3, 3, 3, 0, 0
+  3, 3, 3, 3, 3, 3, 3,
+  3, 3, 3, 3, 3, 3, 3,
+  3, 3, 3, 3, 3, 3, 3,
+  3, 3, 3, 3, 3, 3, 3,
+  3, 3, 3, 3, 3, 3, 3
 };
 
 boolean menuShifting = false;
@@ -118,6 +122,16 @@ const byte alphabet[20] = {
   248, 232, 255, 142, 136,
   120, 185, 121, 159, 153
 };
+
+const boolean banner[] = {
+  1, 1, 1, 0, 1, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 
+  1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 
+  1, 1, 1, 0, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 
+  1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 
+  1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0
+};
+
+int bannerCount = 0;
 
 void setup() {
   Serial.begin(9600);
@@ -154,11 +168,11 @@ void setup() {
   TCCR1B |= (1 << CS10); // setting CS10 bit for 1 prescaling (none)
   TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
 
-  //displayPixels();
+  displayPixels();
 }
 
 void loop() {
-
+  // calcStreamers();
   // printInput();
   // readBatt();
 
@@ -176,7 +190,29 @@ void getBatt () { // careful, messes with interrupts
 }
 
 void meeper() {
-  Serial.println("MEEEEEP!");
+  int len = (sizeof(banner)/sizeof(boolean))/5;
+  if (bannerCount == len) {
+    bannerCount = 0;
+  }
+  int byteCount = bannerCount;
+  shiftLeft(banner[byteCount], banner[byteCount+len], banner[byteCount+len*2], banner[byteCount+len*3], banner[byteCount+len*4]);
+  bannerCount++;
+}
+
+void updateButtons() {
+  updateButtonStates(readRegister());
+  unsigned int temp = 0;
+  if (alphaPress) {
+    dispInterval = max(1, dispInterval-1);
+    meep.setInterval(dispInterval);
+  } else if (betaPress) {
+    dispInterval = min(1000, dispInterval+1);
+    meep.setInterval(dispInterval);
+  }
+  noInterrupts();
+  Serial.println(temp);
+  Serial.println(dispInterval);
+  interrupts();
 }
 
 void printInput() {
@@ -236,64 +272,6 @@ void calcStreamers () {
 
 //void writeRGB
 
-void displayPixels() {
-  // resetRegisters();
-  int i = 0;
-  int j = 0;
-
-  byte wData = 1; // width data (7 bits) enable LOW   0b0111 1111
-  byte hData = 1; // height data (5 bits) enable HIGH 0b0001 1111
-
-  if (reverseHeight) {
-    hData = 0b00010000; // 0001 0000
-  } else {
-    hData = 0b00000001; // 0000 0001
-  }
-
-  for (j = 0; j < height; j++) {
-    if (reverseWidth) { // if we reverse, we want to start large
-      wData = 0b01000000; // 0100 0000
-    } else {
-      wData = 0b00000001; // resetting data for next loop
-    }
-
-    for (i = 0; i < width; i++) {
-      // seeing if the corresponding pixel was t or f
-      if (pixels[i + j * width] > 0) {
-        // resetRegisters();
-        writeMatrixRegisters(wData, hData);
-      }
-
-      // GRAYSCALE!
-      switch (pixels[i + j * width]) {
-        case 0:
-          break;
-        case 1:
-          delayMicroseconds(50);
-          break;
-        case 2:
-          delayMicroseconds(100);
-          break;
-        case 3:
-          delayMicroseconds(200);
-          break;
-      }
-
-      if (reverseWidth) { // SHIFTING THE BIT
-        wData = wData >> 1; // if we reverse, we want to count down (shift bit right)
-      } else {
-        wData = wData << 1; // shifting the "1" over one place left (binary rules)
-      }
-    }
-
-    if (reverseHeight) { // SHIFTING THE BIT
-      hData = hData >> 1; // if we reverse, we want to count down (shift bit right)
-    } else {
-      hData = hData << 1; // shifting the "1" over one place left (binary rules)
-    }
-  }
-  // displayPixels();
-}
 
 void shiftLeft(byte a, byte b, byte c, byte d, byte e) {
   int i = 0;
@@ -407,38 +385,101 @@ ISR(TIMER0_COMPA_vect) { // Interrupt timer runs every 1 ms
   }
 
   if (currentMillis % 1000 == 0) {
+    noInterrupts();
     Serial.print(currentMillis / 1000);
     Serial.println(" seconds since startup");
+    interrupts();
   }
 }
 
 ISR(TIMER1_COMPA_vect) {
-  // runs every updatePeriod microseconds
-  updateCounter %= (width * height * 4 * 32); // rollover reset
-
-  //noInterrupts();
-  //interrupts();
-
-  byte pixelState = (updateCounter % (width * height * 4)) / 4; // 0 - 34, the pixel # are we on
-  byte greyScaleState = updateCounter % 4; // 0 - 3, every 4 cycles
-  byte rgbState = updateCounter % 32; // 0 - 31, the RGB led states PWM 32
-  byte greyScaleValue = pixels[pixelState]; // getting the greyscale value (0 - 3)
-
-//  Serial.println(updateCounter);
-//  Serial.print(greyScaleState);
-//  Serial.print(", ");
-//  Serial.println(greyScaleValue);
-
-  if (greyScaleValue != 0 && greyScaleValue >= greyScaleState) {
-    byte wData = 1 << (pixelState % width); // width data (7 bits) enable LOW   0b0111 1111
-    byte hData = 1 << (pixelState / width); // height data (5 bits) enable HIGH 0b0001 1111
-    writeMatrixRegisters(wData, hData);
-  } else {
-    resetRegisters();
-  }
-
-  updateCounter++;
+  //  // runs every updatePeriod microseconds
+  //  updateCounter %= (width * height * 4 * 35); // rollover reset
+  //
+  //  //noInterrupts();
+  //  //interrupts();
+  //
+  //  byte pixelState = (updateCounter % (width * height * 4)) / 4; // 0 - 34, the pixel # are we on
+  //  byte greyScaleState = updateCounter % 4; // 0 - 3, every 4 cycles
+  //  //byte rgbState = updateCounter % 32; // 0 - 31, the RGB led states PWM 32
+  //  byte greyScaleValue = pixels[pixelState]; // getting the greyscale value (0 - 3)
+  //
+  ////  Serial.println(updateCounter);
+  ////  Serial.print(greyScaleState);
+  ////  Serial.print(", ");
+  ////  Serial.println(greyScaleValue);
+  //
+  //  if (greyScaleValue != 0 && greyScaleValue >= greyScaleState) {
+  //    byte wData = 1 << (pixelState % width); // width data (7 bits) enable LOW   0b0111 1111
+  //    byte hData = 1 << (pixelState / width); // height data (5 bits) enable HIGH 0b0001 1111
+  //    writeMatrixRegisters(wData, hData);
+  //  } else {
+  //    resetRegisters();
+  //  }
+  //
+  //  updateCounter++;
 }
 
 
 
+void displayPixels() {
+  // resetRegisters();
+  int i = 0;
+  int j = 0;
+  float sr = 4;
+
+  byte wData = 1; // width data (7 bits) enable LOW   0b0111 1111
+  byte hData = 1; // height data (5 bits) enable HIGH 0b0001 1111
+
+  if (reverseHeight) {
+    hData = 0b00010000; // 0001 0000
+  } else {
+    hData = 0b00000001; // 0000 0001
+  }
+
+  for (j = 0; j < height; j++) {
+    if (reverseWidth) { // if we reverse, we want to start large
+      wData = 0b01000000; // 0100 0000
+    } else {
+      wData = 0b00000001; // resetting data for next loop
+    }
+
+    for (i = 0; i < width; i++) {
+      // seeing if the corresponding pixel was t or f
+      if (pixels[i + j * width] > 0) {
+        // resetRegisters();
+        writeMatrixRegisters(wData, hData);
+      }
+
+      // GRAYSCALE! (NOT REALLY ANYMORE)
+      switch (pixels[i + j * width]) {
+        case 0:
+          break;
+        case 1:
+          delayMicroseconds(200 * sr);
+          break;
+        case 2:
+          delayMicroseconds(100 * sr);
+          resetRegisters();
+          delayMicroseconds(100 * sr);
+          break;
+        case 3:
+          delayMicroseconds(200 * sr);
+          break;
+      }
+
+      if (reverseWidth) { // SHIFTING THE BIT
+        wData = wData >> 1; // if we reverse, we want to count down (shift bit right)
+      } else {
+        wData = wData << 1; // shifting the "1" over one place left (binary rules)
+      }
+    }
+
+    if (reverseHeight) { // SHIFTING THE BIT
+      hData = hData >> 1; // if we reverse, we want to count down (shift bit right)
+    } else {
+      hData = hData << 1; // shifting the "1" over one place left (binary rules)
+    }
+  }
+  displayPixels();
+}

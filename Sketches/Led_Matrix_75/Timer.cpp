@@ -15,6 +15,7 @@ void Timer::refresh(unsigned long curr_ms) {
     prev_ms = curr_ms;
   }
 }
-
-
-
+void Timer::setInterval(unsigned int newInterval) {
+  interval = newInterval;
+  return interval;
+}
