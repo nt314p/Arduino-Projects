@@ -1,4 +1,4 @@
-// Most code taken from https://github.com/beneater/eeprom-programmer/blob/master/eeprom-programmer/eeprom-programmer.ino
+// Some code taken from https://github.com/beneater/eeprom-programmer/blob/master/eeprom-programmer/eeprom-programmer.ino
 // Credit goes to Ben Eater
 
 #define SHIFT_DATA 2
@@ -11,9 +11,10 @@
 // const char[] hex = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
 
 char cmdMode = '-';
-int parameter = 0;
+unsigned int parameter = 0;
 boolean onData = false;
-int wData = 0;
+unsigned int wData = 0;
+boolean hasNibble = false; // used when loading values in, false when 0 nibbles have been recieved, true when 1 nibble has been recieved (for data)
 
 
 
@@ -199,8 +200,16 @@ void loop() {
         cmdMode = 'w';
         Serial.println("w mode");
       }
+      if (input == 'l') {
+        cmdMode = 'l';
+        Serial.println("l mode");
+      }
+      if (input == 'd') {
+        cmdMode = 'd';
+        Serial.println("d mode");
+      }
     }
-  } else if (cmdMode == 'r') {
+  } else if (cmdMode == 'r') { // read
     if (Serial.available() > 0) {
       char input = Serial.read();
       if (input != ';') {
@@ -208,34 +217,78 @@ void loop() {
         parameter = parameter | hexToInt(input);
       } else {
         Serial.print("Read from ");
-        Serial.print(parameter, DEC);
+        Serial.print(parameter, HEX);
         Serial.print(" is ");
-        Serial.println(readEEPROM(parameter));
+        Serial.println(readEEPROM(parameter), HEX);
         cmdMode = '-';
         parameter = 0;
       }
     }
-  } else if (cmdMode == 'w') {
+  } else if (cmdMode == 'w') { // write
     if (Serial.available() > 0) {
       char input = Serial.read();
       if (input == ';') {
         Serial.print("Wrote: ");
-        Serial.print(wData, DEC);
+        Serial.print(wData, HEX);
         Serial.print(" to ");
-        Serial.println(parameter, DEC);
+        Serial.println(parameter, HEX);
         writeEEPROM(parameter, wData);
         cmdMode = '-';
         parameter = 0;
         wData = 0;
         onData = false;
-      } else if (input == ',') {
-        onData = true;
-      } else if (!onData) {
+      } else if (input == ',') { // if we encounter a comma, we have reached the end of the address
+        onData = true; //           and now read data
+      } else if (!onData) { // address
         parameter = parameter << 4;
         parameter = parameter | hexToInt(input);
-      } else {
+      } else { // data
         wData = wData << 4;
         wData = wData | hexToInt(input);
+      }
+    }
+  } else if (cmdMode == 'l') { // load
+    if (Serial.available() > 0) {
+      char input = Serial.read();
+      if (input == ';') {
+        Serial.println("End of load");
+        cmdMode = '-';
+        parameter = 0;
+        wData = 0;
+      } else { // read data
+        wData = wData << 4;
+        wData = wData | hexToInt(input);
+
+        if (hasNibble) { // we just loaded in the second nibble in the byte, write data
+          writeEEPROM(parameter, wData);
+          hasNibble = false;
+          parameter++; // increment address
+          wData = 0; // reset data
+        } else { // we have just loaded in the first nibble, set nibble to true
+          hasNibble = true;
+        }
+      }
+    }
+  } else if (cmdMode == 'd') { // dump
+    if (Serial.available() > 0) {
+      char input = Serial.read();
+      if (input == ';') {
+        Serial.println("End of load");
+        cmdMode = '-';
+        parameter = 0;
+        wData = 0;
+      } else { // read data
+        wData = wData << 4;
+        wData = wData | hexToInt(input);
+
+        if (hasNibble) { // we just loaded in the second nibble in the byte, write data
+          writeEEPROM(parameter, wData);
+          hasNibble = false;
+          parameter++; // increment address
+          wData = 0; // reset data
+        } else { // we have just loaded in the first nibble, set nibble to true
+          hasNibble = true;
+        }
       }
     }
   }
