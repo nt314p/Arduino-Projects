@@ -1,6 +1,19 @@
 // Some code taken from https://github.com/beneater/eeprom-programmer/blob/master/eeprom-programmer/eeprom-programmer.ino
 // Credit goes to Ben Eater
 
+
+// commands consist of a single char, followed by parameters (in hex) separated by commas. A semicolon ';' ends each command.
+// READ: r[ADDRESS];
+// WRITE: w[ADDRESS],[DATA];
+// LOAD: l[START_ADDRESS],[DATA];
+// DUMP: d[START_ADDRESS],[BYTES];
+// PRINT: p[START_ADDRESS],[BYTES];
+
+
+/*
+   Print only works for start address values that are multiples of 16
+*/
+
 #define SHIFT_DATA 2
 #define SHIFT_CLK 3
 #define SHIFT_LATCH 4
@@ -65,10 +78,6 @@ void writeEEPROM(int address, byte data) {
   delayMicroseconds(1);
   digitalWrite(WRITE_EN, HIGH);
 }
-
-
-
-
 
 /*
 
@@ -189,7 +198,7 @@ void loop() {
   //  }
 
   if (cmdMode == '-') {
-    if (Serial.available() > 0) {
+    if (Serial.available() > 0) { // check incoming chars for valid commands
       char input = Serial.read();
 
       if (input == 'r') {
@@ -207,6 +216,10 @@ void loop() {
       if (input == 'd') {
         cmdMode = 'd';
         Serial.println("d mode");
+      }
+      if (input == 'p') {
+        cmdMode = 'p';
+        Serial.println("p mode");
       }
     }
   } else if (cmdMode == 'r') { // read
@@ -255,10 +268,15 @@ void loop() {
         cmdMode = '-';
         parameter = 0;
         wData = 0;
+        onData = false;
+      } else if (input == ',') { // comma signals end of address
+        onData = true;
+      } else if (!onData) { // address
+        parameter = parameter << 4;
+        parameter = parameter | hexToInt(input);
       } else { // read data
         wData = wData << 4;
         wData = wData | hexToInt(input);
-
         if (hasNibble) { // we just loaded in the second nibble in the byte, write data
           writeEEPROM(parameter, wData);
           hasNibble = false;
@@ -273,22 +291,63 @@ void loop() {
     if (Serial.available() > 0) {
       char input = Serial.read();
       if (input == ';') {
-        Serial.println("End of load");
+        for (int i = 0; i < wData; i++) { // iterate through the required number of bytes to dump
+          int addr = parameter + i; // address of the row
+          char byteLabel[2]; // buffer for byte to be printed
+          sprintf(byteLabel, " %02x", readEEPROM(addr));
+          Serial.print(byteLabel);
+        }
+        Serial.println();
+        Serial.println("End of dump");
         cmdMode = '-';
         parameter = 0;
         wData = 0;
-      } else { // read data
+        onData = false;
+      } else if (input == ',') { // comma signals the end of the start address, begin loading the number of bytes to dump
+        onData = true;
+      } else if (!onData) { // address
+        parameter = parameter << 4;
+        parameter = parameter | hexToInt(input);
+      } else { // read data (in this case, the number of bytes to dump)
         wData = wData << 4;
-        wData = wData | hexToInt(input);
+        wData = wData | hexToInt(input); // todo: implement overloading of nibbles
+      }
+    }
+  } else if (cmdMode == 'p') { // print
+    if (Serial.available() > 0) {
+      char input = Serial.read();
+      if (input == ';') {
+        Serial.println("       0  1  2  3  4  5  6  7   8  9  A  B  C  D  E  F");
 
-        if (hasNibble) { // we just loaded in the second nibble in the byte, write data
-          writeEEPROM(parameter, wData);
-          hasNibble = false;
-          parameter++; // increment address
-          wData = 0; // reset data
-        } else { // we have just loaded in the first nibble, set nibble to true
-          hasNibble = true;
+        for (int i = 0; i < wData; i += 16) { // iterate through the required number of bytes to print
+          byte bytesInRow = ((wData - i) / 16 == 0) ? wData - i : 16; // normally 16, but last row might not have full 16
+          int addr = parameter + i; // address of the row
+          char addrLabel[4]; // buffer for address label
+          char byteLabel[2]; // buffer for byte to be printed
+
+          sprintf(addrLabel, "%04x ", addr);
+          Serial.print(addrLabel);
+          for (int j = 0; j < bytesInRow; j++) {
+            sprintf(byteLabel, " %02x", readEEPROM(addr + j));
+            Serial.print(byteLabel);
+            if (j == 7)
+              Serial.print(" "); // extra padding
+          }
+          Serial.println();
         }
+        Serial.println("End of print");
+        cmdMode = '-';
+        parameter = 0;
+        wData = 0;
+        onData = false;
+      } else if (input == ',') { // comma signals the end of the start address, begin loading the number of bytes to print
+        onData = true;
+      } else if (!onData) { // address
+        parameter = parameter << 4;
+        parameter = parameter | hexToInt(input);
+      } else { // read data (in this case, the number of bytes to print)
+        wData = wData << 4;
+        wData = wData | hexToInt(input); // todo: implement overloading of nibbles
       }
     }
   }
