@@ -21,7 +21,7 @@
 #define EEPROM_D7 12
 #define WRITE_EN 13
 #define EEPROM_WORDS 32768
-// const char[] hex = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
+// const char[] hex = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
 
 char cmdMode = '-';
 unsigned int parameter = 0;
@@ -34,12 +34,17 @@ boolean hasNibble = false; // used when loading values in, false when 0 nibbles 
 
 // Output the address bits and outputEnable signal using shift registers.
 void setAddress(int address, bool outputEnable) {
-  shiftOut(SHIFT_DATA, SHIFT_CLK, MSBFIRST, (address >> 8) | (outputEnable ? 0x00 : 0x80));
-  shiftOut(SHIFT_DATA, SHIFT_CLK, MSBFIRST, address);
+  shiftOutFaster(SHIFT_DATA, SHIFT_CLK, MSBFIRST, (address >> 8) | (outputEnable ? 0x00 : 0x80));
+  shiftOutFaster(SHIFT_DATA, SHIFT_CLK, MSBFIRST, address);
 
-  digitalWrite(SHIFT_LATCH, LOW);
-  digitalWrite(SHIFT_LATCH, HIGH);
-  digitalWrite(SHIFT_LATCH, LOW);
+  // pin 4 latch toggle
+  PORTD &= ~_BV(PD4); // low
+  PORTD |= _BV(PD4); // high
+  PORTD &= ~_BV(PD4); // low
+  
+//  digitalWrite(SHIFT_LATCH, LOW);
+//  digitalWrite(SHIFT_LATCH, HIGH);
+//  digitalWrite(SHIFT_LATCH, LOW);
 }
 
 
@@ -65,18 +70,60 @@ void writeEEPROM(int address, byte data) {
 
   setAddress(address, /*outputEnable*/ false);
 
-  for (int pin = EEPROM_D0; pin <= EEPROM_D7; pin += 1) {
-    pinMode(pin, OUTPUT);
-  }
+
+  // set pins 5-12 to output
+  /*
+     05 PD5
+     06 PD6
+     07 PD7
+     08 PB0
+     09 PB1
+     10 PB2
+     11 PB3
+     12 PB4
+
+     DDRx(ABCD)
+      bit 7 6 5 4 3 2 1 0
+
+                    765xxxxx
+     5-7   DDRD |= B11100000;
+                    xxx43210
+     8-12  DDRB |= B00011111;
+
+      data bit  8  7  6  5  4  3  2  1
+           pin 12 11 10  9  8  7  6  5
+
+       writing 12-8, shift data over 3 bits right
+       writing  7-5, shift data over 5 bits left
+     
+  */
+
+  DDRD |= B11100000;
+  DDRB |= B00011111;
+
+  //  for (int pin = EEPROM_D0; pin <= EEPROM_D7; pin += 1) {
+  //    pinMode(pin, OUTPUT);
+  //  }
+
+
+
+  // set pins 5-12 to data
+  //    data bit  8  7  6  5  4  3  2  1
+  //         pin 12 11 10  9  8  7  6  5
+
 
   for (int pin = EEPROM_D0; pin <= EEPROM_D7; pin += 1) {
     digitalWrite(pin, data & 1);
     data = data >> 1;
   }
 
-  digitalWrite(WRITE_EN, LOW);
+
+  // pin 13 toggle write enable  
+  PORTB &= ~_BV(PB5); // low
+  //digitalWrite(WRITE_EN, LOW);
   delayMicroseconds(1);
-  digitalWrite(WRITE_EN, HIGH);
+  PORTB |= _BV(PB5); // high
+  //digitalWrite(WRITE_EN, HIGH);
 }
 
 /*
@@ -132,7 +179,7 @@ void setup() {
   digitalWrite(WRITE_EN, HIGH);
   pinMode(WRITE_EN, OUTPUT);
 
-  Serial.begin(57600);
+  Serial.begin(500000);
 
 
 
@@ -184,20 +231,34 @@ void setup() {
 
 void loop() {
 
-  //  if (Serial.find("\n")) {
-  //    int bLen = Serial.available();
-  //    char buf[bLen];
-  //
-  //    Serial.readBytesUntil('\n', buf, bLen);
-  //    Serial.print("INPUT: ");
-  //    for (int i = 0; i < bLen; ++i) {
-  //      Serial.print(buf[i]);
-  //    }
-  //    Serial.print("\n");
-  //    Serial.println(hexToInt(buf));
-  //  }
-
-  if (cmdMode == '-') {
+  if (cmdMode == 'l') { // load
+    if (Serial.available() > 0) {
+      char input = Serial.read();
+      if (input == ';') {
+        Serial.println("End of load");
+        cmdMode = '-';
+        parameter = 0;
+        wData = 0;
+        onData = false;
+      } else if (input == ',') { // comma signals end of address
+        onData = true;
+      } else if (!onData) { // address
+        parameter = parameter << 4;
+        parameter = parameter | hexToInt(input);
+      } else { // read data
+        wData = wData << 4;
+        wData = wData | hexToInt(input);
+        if (hasNibble) { // we just loaded in the second nibble in the byte, write data
+          writeEEPROM(parameter, wData);
+          hasNibble = false;
+          parameter++; // increment address
+          wData = 0; // reset data
+        } else { // we have just loaded in the first nibble, set nibble to true
+          hasNibble = true;
+        }
+      }
+    }
+  } else if (cmdMode == '-') {
     if (Serial.available() > 0) { // check incoming chars for valid commands
       char input = Serial.read();
 
@@ -260,34 +321,7 @@ void loop() {
         wData = wData | hexToInt(input);
       }
     }
-  } else if (cmdMode == 'l') { // load
-    if (Serial.available() > 0) {
-      char input = Serial.read();
-      if (input == ';') {
-        Serial.println("End of load");
-        cmdMode = '-';
-        parameter = 0;
-        wData = 0;
-        onData = false;
-      } else if (input == ',') { // comma signals end of address
-        onData = true;
-      } else if (!onData) { // address
-        parameter = parameter << 4;
-        parameter = parameter | hexToInt(input);
-      } else { // read data
-        wData = wData << 4;
-        wData = wData | hexToInt(input);
-        if (hasNibble) { // we just loaded in the second nibble in the byte, write data
-          writeEEPROM(parameter, wData);
-          hasNibble = false;
-          parameter++; // increment address
-          wData = 0; // reset data
-        } else { // we have just loaded in the first nibble, set nibble to true
-          hasNibble = true;
-        }
-      }
-    }
-  } else if (cmdMode == 'd') { // dump
+  } else  if (cmdMode == 'd') { // dump
     if (Serial.available() > 0) {
       char input = Serial.read();
       if (input == ';') {
@@ -358,6 +392,20 @@ int hexToInt(char hex) {
   char *ptr;
   int ret = strtoul(str, &ptr, 16);
   return ret;
+}
+
+void shiftOutFaster(uint8_t dataPin, uint8_t clockPin, uint8_t bitOrder, uint8_t val) {
+  uint8_t i;
+
+  for (i = 0; i < 8; ++i)  {
+    if (!!(val & (1 << (7 - i))))
+      PORTD |= _BV(PD2); // data high
+    else
+      PORTD &= ~_BV(PD2); // data low
+
+    PORTD |= _BV(PD3); // pin 3 high (clock)
+    PORTD &= ~_BV(PD3); // pin 3 low
+  }
 }
 
 
