@@ -46,7 +46,7 @@ void setup() {
   */
   delay(100);
   // Call this function if you need to get the IMU error values for your module
-  calculate_IMU_error();
+  // calculate_IMU_error();
   delay(5000);
 
 }
@@ -92,9 +92,9 @@ void loop() {
   
   // Print the values on the serial monitor
   Serial.print(roll);
-  Serial.print("/");
+  Serial.print("\t");
   Serial.print(pitch);
-  Serial.print("/");
+  Serial.print("\t");
   Serial.println(yaw);
 }
 
