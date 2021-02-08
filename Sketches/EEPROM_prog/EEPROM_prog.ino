@@ -1,14 +1,12 @@
 // Some code taken from https://github.com/beneater/eeprom-programmer/blob/master/eeprom-programmer/eeprom-programmer.ino
 // Credit goes to Ben Eater
 
-
 // commands consist of a single char, followed by parameters (in hex) separated by commas. A semicolon ';' ends each command.
 // READ: r[ADDRESS];
 // WRITE: w[ADDRESS],[DATA];
 // LOAD: l[START_ADDRESS],[DATA];
 // DUMP: d[START_ADDRESS],[BYTES];
 // PRINT: p[START_ADDRESS],[BYTES];
-
 
 /*
    Print only works for start address values that are multiples of 16
@@ -21,16 +19,13 @@
 #define EEPROM_D7 12
 #define WRITE_EN 13
 #define EEPROM_WORDS 32768
-// const char[] hex = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
 
 char cmdMode = '-';
 unsigned int parameter = 0;
 boolean onData = false;
 unsigned int wData = 0;
-boolean hasNibble = false; // used when loading values in, false when 0 nibbles have been recieved, true when 1 nibble has been recieved (for data)
-
-
-
+boolean hasNibble = false; // used when loading values in, 
+// false when 0 nibbles have been recieved, true when 1 nibble has been recieved (for data)
 
 // Output the address bits and outputEnable signal using shift registers.
 void setAddress(int address, bool outputEnable) {
@@ -41,35 +36,52 @@ void setAddress(int address, bool outputEnable) {
   PORTD &= ~_BV(PD4); // low
   PORTD |= _BV(PD4); // high
   PORTD &= ~_BV(PD4); // low
-  
-//  digitalWrite(SHIFT_LATCH, LOW);
-//  digitalWrite(SHIFT_LATCH, HIGH);
-//  digitalWrite(SHIFT_LATCH, LOW);
+
+  //  digitalWrite(SHIFT_LATCH, LOW);
+  //  digitalWrite(SHIFT_LATCH, HIGH);
+  //  digitalWrite(SHIFT_LATCH, LOW);
 }
 
 
 // Read a byte from the EEPROM at the specified address.
 byte readEEPROM(int address) {
-
-  for (int pin = EEPROM_D0; pin <= EEPROM_D7; pin += 1) {
+  for (int pin = EEPROM_D0; pin <= EEPROM_D7; pin++) {
     pinMode(pin, INPUT);
   }
 
   setAddress(address, /*outputEnable*/ true);
 
   byte data = 0;
-  for (int pin = EEPROM_D7; pin >= EEPROM_D0; pin -= 1) {
+  for (int pin = EEPROM_D7; pin >= EEPROM_D0; pin--) {
     data = (data << 1) + digitalRead(pin);
   }
 
   return data;
 }
 
+// Force write a byte to EEPROM (ignores write optimization where it checks for existing value)
+void forceWriteEEPROM(int address, byte data) {
+  setAddress(address, false);
+
+  DDRD |= B11100000;
+  DDRB |= B00011111;
+
+  for (int pin = EEPROM_D0; pin <= EEPROM_D7; pin++) {
+    digitalWrite(pin, data & 1);
+    data = data >> 1;
+  }
+
+  PORTB &= ~_BV(PB5); // low
+  delayMicroseconds(1);
+  PORTB |= _BV(PB5); // high
+}
+
+
 // Write a byte to the EEPROM at the specified address.
 void writeEEPROM(int address, byte data) {
+  if (readEEPROM(address) == data) return;
 
   setAddress(address, /*outputEnable*/ false);
-
 
   // set pins 5-12 to output
   /*
@@ -95,17 +107,11 @@ void writeEEPROM(int address, byte data) {
 
        writing 12-8, shift data over 3 bits right
        writing  7-5, shift data over 5 bits left
-     
+
   */
 
   DDRD |= B11100000;
   DDRB |= B00011111;
-
-  //  for (int pin = EEPROM_D0; pin <= EEPROM_D7; pin += 1) {
-  //    pinMode(pin, OUTPUT);
-  //  }
-
-
 
   // set pins 5-12 to data
   //    data bit  8  7  6  5  4  3  2  1
@@ -117,8 +123,7 @@ void writeEEPROM(int address, byte data) {
     data = data >> 1;
   }
 
-
-  // pin 13 toggle write enable  
+  // pin 13 toggle write enable
   PORTB &= ~_BV(PB5); // low
   //digitalWrite(WRITE_EN, LOW);
   delayMicroseconds(1);
@@ -126,49 +131,14 @@ void writeEEPROM(int address, byte data) {
   //digitalWrite(WRITE_EN, HIGH);
 }
 
-/*
-
-   Read the contents of the EEPROM and print them to the serial monitor.
-
-*/
-
-void printContents() {
-
-  for (int base = 0; base <= 255; base += 16) {
-
-    byte data[16];
-
-    for (int offset = 0; offset <= 15; offset += 1) {
-      data[offset] = readEEPROM(base + offset);
-    }
-
-    char buf[80];
-
-    sprintf(buf, "%03x:  %02x %02x %02x %02x %02x %02x %02x %02x   %02x %02x %02x %02x %02x %02x %02x %02x",
-
-            base, data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
-
-            data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15]);
-
-    Serial.println(buf);
-  }
-}
-
 /* SOFTWARE WRITE PROTECTION DISABLE
-  writeEEPROM(0x5555, 0xAA);
-  writeEEPROM(0x2AAA, 0x55);
-  writeEEPROM(0x5555, 0x80);
-  writeEEPROM(0x5555, 0xAA);
-  writeEEPROM(0x2AAA, 0x55);
-  writeEEPROM(0x5555, 0x20);
+  forceWriteEEPROM(0x5555, 0xAA);
+  forceWriteEEPROM(0x2AAA, 0x55);
+  forceWriteEEPROM(0x5555, 0x80);
+  forceWriteEEPROM(0x5555, 0xAA);
+  forceWriteEEPROM(0x2AAA, 0x55);
+  forceWriteEEPROM(0x5555, 0x20);
 */
-
-
-
-// 4-bit hex decoder for common anode 7-segment display
-
-byte data[] = { 0x81, 0xcf, 0x92, 0x86, 0xcc, 0xa4, 0xa0, 0x8f, 0x80, 0x84, 0x88, 0xe0, 0xb1, 0xc2, 0xb0, 0xb8 };
-
 
 void setup() {
 
@@ -181,56 +151,16 @@ void setup() {
 
   Serial.begin(500000);
 
-
-
-  /*
-    // Erase entire EEPROM
-
-    Serial.print("Erasing EEPROM");
-
-    for (int address = 0; address <= 2047; address += 1) {
-
-      writeEEPROM(address, 0b10101010);
-
-
-
-      if (address % 64 == 0) {
-
-        Serial.print(".");
-
-      }
-
-    }
-
-    Serial.println(" done");
-  */
-
-
-
-
-  // Program data bytes
-
-  //  Serial.print("Programming EEPROM");
-  //
-  //  for (int address = 0; address < sizeof(data); address += 1) {
-  //
-  //    writeEEPROM(address, data[address]);
-  //
-  //
-  //
-  //    if (address % 64 == 0) {
-  //
-  //      Serial.print(".");
-  //
-  //    }
-  //
-  //  }
-
+//  delay(100);
+//  forceWriteEEPROM(0x5555, 0xAA);
+//  forceWriteEEPROM(0x2AAA, 0x55);
+//  forceWriteEEPROM(0x5555, 0x80);
+//  forceWriteEEPROM(0x5555, 0xAA);
+//  forceWriteEEPROM(0x2AAA, 0x55);
+//  forceWriteEEPROM(0x5555, 0x20);
 }
 
-
 void loop() {
-
   if (cmdMode == 'l') { // load
     if (Serial.available() > 0) {
       char input = Serial.read();
@@ -282,6 +212,10 @@ void loop() {
         cmdMode = 'p';
         Serial.println("p mode");
       }
+      if (input == 'e') {
+        cmdMode = 'e';
+        Serial.println("e mode");
+      }
     }
   } else if (cmdMode == 'r') { // read
     if (Serial.available() > 0) {
@@ -290,10 +224,11 @@ void loop() {
         parameter = parameter << 4;
         parameter = parameter | hexToInt(input);
       } else {
+        byte result = readEEPROM(parameter);
         Serial.print("Read from ");
         Serial.print(parameter, HEX);
         Serial.print(" is ");
-        Serial.println(readEEPROM(parameter), HEX);
+        Serial.println(result, HEX);
         cmdMode = '-';
         parameter = 0;
       }
@@ -302,11 +237,12 @@ void loop() {
     if (Serial.available() > 0) {
       char input = Serial.read();
       if (input == ';') {
+        writeEEPROM(parameter, wData);
         Serial.print("Wrote: ");
         Serial.print(wData, HEX);
         Serial.print(" to ");
         Serial.println(parameter, HEX);
-        writeEEPROM(parameter, wData);
+        
         cmdMode = '-';
         parameter = 0;
         wData = 0;
@@ -328,7 +264,7 @@ void loop() {
         for (int i = 0; i < wData; i++) { // iterate through the required number of bytes to dump
           int addr = parameter + i; // address of the row
           char byteLabel[2]; // buffer for byte to be printed
-          sprintf(byteLabel, " %02x", readEEPROM(addr));
+          sprintf(byteLabel, " %02X", readEEPROM(addr));
           Serial.print(byteLabel);
         }
         Serial.println();
@@ -359,10 +295,10 @@ void loop() {
           char addrLabel[4]; // buffer for address label
           char byteLabel[2]; // buffer for byte to be printed
 
-          sprintf(addrLabel, "%04x ", addr);
+          sprintf(addrLabel, "%04X ", addr);
           Serial.print(addrLabel);
           for (int j = 0; j < bytesInRow; j++) {
-            sprintf(byteLabel, " %02x", readEEPROM(addr + j));
+            sprintf(byteLabel, " %02X", readEEPROM(addr + j));
             Serial.print(byteLabel);
             if (j == 7)
               Serial.print(" "); // extra padding
@@ -384,14 +320,28 @@ void loop() {
         wData = wData | hexToInt(input); // todo: implement overloading of nibbles
       }
     }
+  } else if (cmdMode == 'e') { // erase
+    if (Serial.available() > 0) {
+      char input = Serial.read();
+      if (input == ';') {
+        forceWriteEEPROM(0x5555, 0xAA);
+        forceWriteEEPROM(0x2AAA, 0x55);
+        forceWriteEEPROM(0x5555, 0x80);
+        forceWriteEEPROM(0x5555, 0xAA);
+        forceWriteEEPROM(0x2AAA, 0x55);
+        forceWriteEEPROM(0x5555, 0x10);
+        delay(20); // wait for chip erase
+        Serial.println("Chip erased");
+        cmdMode = '-';
+      }
+    }
   }
 }
 
 int hexToInt(char hex) {
   char str[] = {hex};
   char *ptr;
-  int ret = strtoul(str, &ptr, 16);
-  return ret;
+  return strtoul(str, &ptr, 16);
 }
 
 void shiftOutFaster(uint8_t dataPin, uint8_t clockPin, uint8_t bitOrder, uint8_t val) {
@@ -407,57 +357,3 @@ void shiftOutFaster(uint8_t dataPin, uint8_t clockPin, uint8_t bitOrder, uint8_t
     PORTD &= ~_BV(PD3); // pin 3 low
   }
 }
-
-
-/*
-  const byte numChars = 32;
-  char receivedChars[numChars];
-
-  boolean newData = false;
-
-
-  void loop() {
-    recvWithStartEndMarkers();
-    showNewData();
-  }
-
-  void recvWithStartEndMarkers() {
-    static boolean recvInProgress = false;
-    static byte ndx = 0;
-    char startMarker = '<';
-    char endMarker = '>';
-    char rc;
-
-  // if (Serial.available() > 0) {
-    while (Serial.available() > 0 && newData == false) {
-        rc = Serial.read();
-
-        if (recvInProgress == true) {
-            if (rc != endMarker) {
-                receivedChars[ndx] = rc;
-                ndx++;
-                if (ndx >= numChars) {
-                    ndx = numChars - 1;
-                }
-            }
-            else {
-                receivedChars[ndx] = '\0'; // terminate the string
-                recvInProgress = false;
-                ndx = 0;
-                newData = true;
-            }
-        }
-
-        else if (rc == startMarker) {
-            recvInProgress = true;
-        }
-    }
-  }
-
-  void showNewData() {
-    if (newData == true) {
-        Serial.print("This just in ... ");
-        Serial.println(receivedChars);
-        newData = false;
-    }
-  }*/
