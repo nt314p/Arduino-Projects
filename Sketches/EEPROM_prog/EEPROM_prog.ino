@@ -11,11 +11,11 @@
 // EEPROM writes the data and is ready for more in 200 us.
 
 // commands consist of a single char, followed by parameters (in hex) separated by commas. A semicolon ';' ends each command.
-// READ: r[ADDRESS];
-// WRITE: w[ADDRESS],[DATA];
-// LOAD: l[START_ADDRESS],[DATA];
-// DUMP: d[START_ADDRESS],[BYTES];
-// PRINT: p[START_ADDRESS],[BYTES];
+// READ: r[ADDRESS];         // 4 = 4 bytes
+// WRITE: w[ADDRESS],[DATA]; // 4 + 1 + 2 = 7 bytes
+// LOAD: l[START_ADDRESS],[DATA]; // cannot buffer parameters
+// DUMP: d[START_ADDRESS],[#BYTES (hex)]; //  4 + 1 + 4 = 9 bytes
+// PRINT: p[START_ADDRESS],[#BYTES (hex)]; // 4 + 1 + 4 = 9 bytes
 
 /*
    Print only works for start address values that are multiples of 16
@@ -28,15 +28,53 @@
 #define EEPROM_D7 12
 #define WRITE_EN 13
 #define EEPROM_WORDS 32768
+#define MAX_BUFFER_LENGTH 1024
+#define MAX_PARAM_BUFFER_LENGTH 9
+
+char dataBuffer[MAX_BUFFER_LENGTH];
+char parameterBuffer[MAX_PARAM_BUFFER_LENGTH];
+byte paramIndex = 0;
+
+bool hasCommand = false;
+char currentCommand = ' ';
 
 unsigned long t = micros();
 const char validCommands[] = { 'r', 'w', 'l', 'd', 'p', 'e' };
 char cmdMode = '-';
 unsigned int parameter = 0;
-boolean onData = false;
+bool onData = false;
 unsigned int wData = 0;
-boolean hasNibble = false; // used when loading values in,
+bool hasNibble = false; // used when loading values in,
 // false when 0 nibbles have been recieved, true when 1 nibble has been recieved (for data)
+
+unsigned int bufferLength = 0;
+unsigned int readIndex = 0;
+unsigned int writeIndex = 0;
+
+char readBuffer() {
+  if (bufferLength <= 0) {
+    return -1;
+  }
+  char value = dataBuffer[readIndex];
+  bufferLength--;
+  readIndex++;
+  if (readIndex >= MAX_BUFFER_LENGTH) {
+    readIndex = 0;
+  }
+  return value;
+}
+
+void writeBuffer(char value) {
+  if (bufferLength >= MAX_BUFFER_LENGTH) {
+    return;
+  }
+  dataBuffer[writeIndex] = value;
+  bufferLength++;
+  writeIndex++;
+  if (writeIndex >= MAX_BUFFER_LENGTH) {
+    writeIndex = 0;
+  }
+}
 
 void setup() {
 
@@ -47,7 +85,7 @@ void setup() {
   digitalWrite(WRITE_EN, HIGH);
   pinMode(WRITE_EN, OUTPUT);
 
-  Serial.begin(500000);
+  Serial.begin(38400);
 
   //  delay(100);
   //  forceWriteEEPROM(0x5555, 0xAA);
@@ -60,7 +98,44 @@ void setup() {
 
 void loop() {
   if (Serial.available() > 0) {
-    char input = Serial.read();
+    if (bufferLength < MAX_BUFFER_LENGTH) {
+      writeBuffer(Serial.read());
+    } else {
+      Serial.println(F("Buffer overflow!"));
+    }
+  }
+  old_loop();
+}
+
+void old_loop() {
+  if (bufferLength > 0) {
+    char input = readBuffer();
+
+    if (!hasCommand) {
+      if (isValidCommand(input)) {
+        currentCommand = input;
+        hasCommand = true;
+        Serial.println(F("Command is valid!"));
+        return;
+      }
+      Serial.println(F("Invalid command!"));
+    }
+
+    if (hasCommand && currentCommand != 'l') {
+      if (input == ';') {
+        evaluateCommand();
+        finalizeCommand();
+      } else {
+        parameterBuffer[paramIndex] = input;
+        paramIndex++;
+        if (paramIndex > MAX_PARAM_BUFFER_LENGTH) {
+          Serial.println(F("Invalid command length"));
+        }
+      }
+    }
+    return;
+
+// -------------
 
     if (cmdMode == 'l') { // load
       if (input == ';') {
@@ -191,6 +266,48 @@ void cmdPrint(char input) {
   }
 }
 
+void evaluateCommand() {
+  byte commaIndex = 255;
+  for (byte i = 0; i < paramIndex; i++) {
+    if (parameterBuffer[i] == ',') {
+      commaIndex = i;
+    }
+  }
+  if (commaIndex == 255) {
+    if (currentCommand == 'r') { // command is read, takes only single parameter
+      commaIndex = paramIndex;
+    } else {
+      Serial.println(F("Incorrect parameter number"));
+      return;
+    }
+  }
+  long address = parseLongParam(0, commaIndex); // start of buffer to comma
+  long dataParam = parseLongParam(commaIndex + 1, paramIndex); // after comma to end of buffer
+  Serial.println(commaIndex);
+  Serial.println(paramIndex);
+  Serial.print("Address: ");
+  Serial.println(address);
+  Serial.print("Data: ");
+  Serial.println(dataParam);
+}
+
+void finalizeCommand() { // resets command variables
+  for (byte i = 0; i < MAX_PARAM_BUFFER_LENGTH; ++i) {
+    parameterBuffer[i] = 0;
+  }
+  paramIndex = 0;
+  hasCommand = false;
+}
+
+long parseLongParam(byte startIndex, byte endIndex) {
+  long value = 0;
+  for (byte i = startIndex; i < endIndex; i++) {
+    value = value << 4;
+    value += hexToByte(parameterBuffer[i]);
+  }
+  return value;
+}
+
 void setCmdMode(char input) {
   for (byte i = 0; i < sizeof(validCommands); ++i) {
     if (input == validCommands[i]) {
@@ -199,6 +316,14 @@ void setCmdMode(char input) {
       Serial.println(F(" mode"));
     }
   }
+}
+
+bool isValidCommand(char input) {
+  for (byte i = 0; i < sizeof(validCommands); ++i) {
+    if (input == validCommands[i])
+      return true;
+  }
+  return false;
 }
 
 void resetCmdVars() {
@@ -241,19 +366,6 @@ byte readEEPROM(int address) {
   //                          12---8                    7-5
   byte portRead = ((PINB & B00011111) << 3) + ((PIND & B11100000) >> 5);
 
-  //  Serial.println("********");
-  //  Serial.println(PINB, BIN);
-  //  Serial.println(PIND, BIN);
-  //  Serial.println(portRead, BIN);
-  //
-  //  byte data = 0;
-  //
-  //  for (int pin = EEPROM_D7; pin >= EEPROM_D0; pin--) {
-  //    data = (data << 1) + digitalRead(pin);
-  //  }
-  //
-  //  Serial.println(data, BIN);
-
   return portRead;
 }
 
@@ -277,7 +389,10 @@ void forceWriteEEPROM(int address, byte data) {
 
 // Write a byte to the EEPROM at the specified address.
 void writeEEPROM(int address, byte data) {
-  if (readEEPROM(address) == data) return;
+  if (readEEPROM(address) == data) {
+    Serial.println("skipped!");
+    return;
+  }
 
   setAddress(address, /*outputEnable*/ false);
 
@@ -332,7 +447,7 @@ void writeEEPROM(int address, byte data) {
   // D: ddd00000
   //       76543
   // B: 000ddddd
-  
+
   PORTD &= B00011111; // clear bits
   PORTB &= B11100000;
   PORTD |= data << 5; // write bits 2,1,0
@@ -368,6 +483,19 @@ int hexToInt(char hex) {
   char str[] = {hex};
   char *ptr;
   return strtoul(str, &ptr, 16);
+}
+
+byte hexToByte(char hex) {
+  if (hex >= 97) { // lowercase a-f
+    hex -= 32; // capitalize
+  }
+  if (48 <= hex && hex <= 57) { // 0 - 9
+    return hex - 48;
+  }
+  if (65 <= hex && hex <= 70) { // A - F
+    return hex - 55;
+  }
+  return -1;
 }
 
 void shiftOutFaster(uint8_t dataPin, uint8_t clockPin, uint8_t bitOrder, uint8_t val) {
