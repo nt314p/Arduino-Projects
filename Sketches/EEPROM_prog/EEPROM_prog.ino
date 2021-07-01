@@ -28,7 +28,7 @@
 #define EEPROM_D7 12
 #define WRITE_EN 13
 #define EEPROM_WORDS 32768
-#define MAX_BUFFER_LENGTH 1024
+#define MAX_BUFFER_LENGTH 900
 #define MAX_PARAM_BUFFER_LENGTH 9
 
 char dataBuffer[MAX_BUFFER_LENGTH];
@@ -98,8 +98,24 @@ void setup() {
 
 void loop() {
   if (Serial.available() > 0) {
-    if (bufferLength < MAX_BUFFER_LENGTH) {
-      writeBuffer(Serial.read());
+    char input = Serial.read();
+    if (input == 't') {
+      Serial.println(F("Testing..."));
+      char test = 'w';
+      switch (test) {
+        case 'r':
+          Serial.println(F("got r"));
+          byte result = 10;
+          break;
+        case 'w':
+          Serial.println(F("got w"));
+          break;
+        case 'd':
+          Serial.println(F("got d"));
+          break;
+      }
+    } else if (bufferLength < MAX_BUFFER_LENGTH) {
+      writeBuffer(input);
     } else {
       Serial.println(F("Buffer overflow!"));
     }
@@ -135,7 +151,7 @@ void old_loop() {
     }
     return;
 
-// -------------
+    // -------------
 
     if (cmdMode == 'l') { // load
       if (input == ';') {
@@ -234,6 +250,29 @@ void old_loop() {
   }
 }
 
+void commandPrint(int address, int numBytes) {
+  Serial.println(F("       0  1  2  3  4  5  6  7   8  9  A  B  C  D  E  F"));
+
+  char addrLabel[4]; // buffer for address label
+  char byteLabel[2]; // buffer for byte to be printed
+
+  for (int i = 0; i < numBytes; i += 16) { // iterate through the required number of bytes to print
+    byte bytesInRow = ((numBytes - i) / 16 == 0) ? numBytes - i : 16; // normally 16, but last row might not have full 16
+    int addr = address + i; // address of the row
+
+    sprintf(addrLabel, "%04X ", addr);
+    Serial.print(addrLabel);
+    for (int j = 0; j < bytesInRow; j++) {
+      sprintf(byteLabel, " %02X", readEEPROM(addr + j));
+      Serial.print(byteLabel);
+      if (j == 7)
+        Serial.print(" "); // extra padding
+    }
+    Serial.println();
+  }
+  Serial.println("End of print");
+}
+
 void cmdPrint(char input) {
   if (input == ';') {
     Serial.println(F("       0  1  2  3  4  5  6  7   8  9  A  B  C  D  E  F"));
@@ -281,14 +320,86 @@ void evaluateCommand() {
       return;
     }
   }
-  long address = parseLongParam(0, commaIndex); // start of buffer to comma
-  long dataParam = parseLongParam(commaIndex + 1, paramIndex); // after comma to end of buffer
+  int address = parseIntParam(0, commaIndex); // start of buffer to comma
+  int dataParam = parseIntParam(commaIndex + 1, paramIndex); // after comma to end of buffer
   Serial.println(commaIndex);
   Serial.println(paramIndex);
   Serial.print("Address: ");
   Serial.println(address);
   Serial.print("Data: ");
   Serial.println(dataParam);
+  Serial.println(currentCommand);
+
+  if (currentCommand == 'w') {
+    Serial.println(F("cmd is w!"));
+  }
+
+  switch (currentCommand) {
+    case 'r':
+      //Serial.println(F("got r"));
+      // t = micros();
+      byte result=10;// = readEEPROM(address);
+      //      Serial.println(micros() - t);
+      //      Serial.print("Read from ");
+      //      Serial.print(address, HEX);
+      //      Serial.print(" is ");
+      //Serial.println(result, HEX);
+      break;
+    case 'w':
+      Serial.println(F("got w"));
+      break;
+    case 'd':
+      Serial.println(F("got d"));
+      break;
+  }
+
+  switch (currentCommand) {
+    case 'x':
+      t = micros();
+      byte result = readEEPROM(address);
+      Serial.println(micros() - t);
+      Serial.print("Read from ");
+      Serial.print(address, HEX);
+      Serial.print(" is ");
+      Serial.println(result, HEX);
+      break;
+    case 'w':
+      Serial.println(F("Writing..."));
+      t = micros();
+      writeEEPROM(address, (byte) dataParam);
+      unsigned long diff = micros() - t;
+      Serial.print("Wrote: ");
+      Serial.print(dataParam, HEX);
+      Serial.print(" to ");
+      Serial.println(address, HEX);
+      Serial.println(diff);
+      break;
+    case 'p':
+      Serial.println("Printing...");
+      commandPrint(address, dataParam);
+      break;
+    case 'd':
+      Serial.println("Dumping...");
+      char byteLabel[2]; // buffer for byte to be printed
+      for (int i = 0; i < dataParam; i++) { // iterate through the required number of bytes to dump
+        int addr = address + i; // address of the row
+        sprintf(byteLabel, " %02X", readEEPROM(addr));
+        Serial.print(byteLabel);
+      }
+      Serial.println(F("\nEnd of dump"));
+      break;
+    case 'e':
+      forceWriteEEPROM(0x5555, 0xAA);
+      forceWriteEEPROM(0x2AAA, 0x55);
+      forceWriteEEPROM(0x5555, 0x80);
+      forceWriteEEPROM(0x5555, 0xAA);
+      forceWriteEEPROM(0x2AAA, 0x55);
+      forceWriteEEPROM(0x5555, 0x10);
+      delay(20); // wait for chip erase
+
+      Serial.println(F("Chip erased"));
+      break;
+  }
 }
 
 void finalizeCommand() { // resets command variables
@@ -299,8 +410,8 @@ void finalizeCommand() { // resets command variables
   hasCommand = false;
 }
 
-long parseLongParam(byte startIndex, byte endIndex) {
-  long value = 0;
+int parseIntParam(byte startIndex, byte endIndex) {
+  int value = 0;
   for (byte i = startIndex; i < endIndex; i++) {
     value = value << 4;
     value += hexToByte(parameterBuffer[i]);
