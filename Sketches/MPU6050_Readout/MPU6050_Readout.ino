@@ -47,6 +47,10 @@ int calibrateIterations = 100;
 Vector3 gyroError = zero;
 Vector3 accelError = zero;
 
+bool gotAcknowledge = false;
+
+long prevMillis = 0;
+
 void setup() {
   Serial.begin(38400); // for bluetooth module HC-05
   resetMPU6050();
@@ -58,28 +62,44 @@ void setup() {
 }
 
 void loop() {
+  while (Serial.available() > 0) {
+    if (Serial.read() == 'A') {
+      Serial.print('A');
+      gotAcknowledge = true;
+      while (Serial.available() > 0) { // empty in buffer
+        Serial.read();
+      }
+      delay(100);
+    }
+  }
+
+  if (!gotAcknowledge) return;
+
   smoothingCache[smoothingCount] = readGyro();
   smoothingCount = (smoothingCount + 1) % smoothing;
 
-  if (smoothingCount == 0) {
-    Vector3 gyroSum = zero;
-    for (int i = 0; i < smoothing; i++) {
-      gyroSum = add(gyroSum, smoothingCache[i]);
-    }
-    gyroSum = multiply(gyroSum, 1.0 / smoothing);
-    Serial.print(gyroSum.x);
-    Serial.print("\t");
-    Serial.print(gyroSum.y);
-    Serial.print("\t");
-    Serial.println(gyroSum.z);
+  long currMillis = millis();
+  if (currMillis - prevMillis >= 5) {
+    sendData();
+    prevMillis = currMillis;
   }
 
-  delay(1);
+  delayMicroseconds(100);
 
   //  Vector3 accels = readAccel();
   //  float ang = atan2(accels.x, accels.z) * 180 / PI; // y/x
   //  Serial.println(ang);
   //  delay(10);
+}
+
+void sendData() {
+  Vector3 gyroSum = zero;
+  for (int i = 0; i < smoothing; i++) {
+    gyroSum = add(gyroSum, smoothingCache[i]);
+  }
+  gyroSum = multiply(gyroSum, 1.0 / smoothing);
+  byte* buf = (byte*) &gyroSum;
+  Serial.write(buf, sizeof(Vector3));
 }
 
 void resetMPU6050() {
