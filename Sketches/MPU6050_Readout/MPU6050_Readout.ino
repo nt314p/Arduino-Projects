@@ -48,20 +48,58 @@ Vector3 gyroError = zero;
 Vector3 accelError = zero;
 
 bool gotAcknowledge = false;
-
-long prevMillis = 0;
+bool b = false;
+unsigned long diff = 0;
+unsigned long prevMicros = 0;
 
 void setup() {
-  Serial.begin(38400); // for bluetooth module HC-05
+  Serial.begin(115200); // for bluetooth module HC-05
   resetMPU6050();
   delay(1);
   calibrateGyro();
   delay(1);
   calibrateAccel();
   delay(1);
+
+//  Serial.print("AT\r\n");
+//  delay(100);
+//  Serial.print("AT+VERSION?\r\n");
+//  delay(100);
+//  Serial.print("AT+NAME?\r\n");
+//  delay(100);
+//  Serial.print("AT+UART?\r\n");
+//  delay(100);
+//  Serial.print("AT+PSWD?\r\n");
+
+  cli(); // stop interrupts
+
+  // set timer1 interrupt at 1Hz
+  TCCR1A = 0; // set entire TCCR1A register to 0
+  TCCR1B = 0; // same for TCCR1B
+  TCNT1  = 0; // initialize counter value to 0
+
+  // 10 ms intervals
+  OCR1A = 19999; // 0.01/(8/16e6) = 20000
+  // turn on CTC mode
+  TCCR1B |= (1 << WGM12);
+  TCCR1B |= (1 << CS11); // f_cpu/8 prescaler
+  // enable timer compare interrupt
+  TIMSK1 |= (1 << OCIE1A);
+
+  sei(); // enable interrupts
 }
 
+ISR(TIMER1_COMPA_vect) {
+  unsigned long currMicros = micros();
+  diff = currMicros - prevMicros;
+  prevMicros = currMicros;
+  b = true;
+}
 void loop() {
+//  while (Serial.available() > 0) {
+//    Serial.print((char) Serial.read());
+//  }
+
   while (Serial.available() > 0) {
     if (Serial.read() == 'A') {
       Serial.print('A');
@@ -78,13 +116,12 @@ void loop() {
   smoothingCache[smoothingCount] = readGyro();
   smoothingCount = (smoothingCount + 1) % smoothing;
 
-  long currMillis = millis();
-  if (currMillis - prevMillis >= 5) {
+  if (b) {
     sendData();
-    prevMillis = currMillis;
+    b = false;
   }
 
-  delayMicroseconds(100);
+  //delayMicroseconds(100);
 
   //  Vector3 accels = readAccel();
   //  float ang = atan2(accels.x, accels.z) * 180 / PI; // y/x
