@@ -1,5 +1,4 @@
 #include <Wire.h>
-#include <math.h>
 
 #define MPU 0x68
 #define GYRO_X 0x43
@@ -53,6 +52,8 @@ unsigned long diff = 0;
 unsigned long prevMicros = 0;
 
 void setup() {
+  pinMode(5, INPUT);
+  pinMode(6, INPUT);
   Serial.begin(115200); // for bluetooth module HC-05
   resetMPU6050();
   delay(1);
@@ -137,6 +138,8 @@ void sendData() {
   gyroSum = multiply(gyroSum, 1.0 / smoothing);
   byte* buf = (byte*) &gyroSum;
   Serial.write(buf, sizeof(Vector3));
+  byte buttonData = ((digitalRead(5) == HIGH) << 1) + (digitalRead(6) == HIGH);
+  Serial.write(buttonData);
 }
 
 void resetMPU6050() {
