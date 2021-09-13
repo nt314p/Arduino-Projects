@@ -20,6 +20,10 @@
 #define AFS_SEL_2 2 //  8
 #define AFS_SEL_3 3 //  16
 
+#define MOUSE_L_PIN 5
+#define MOUSE_R_PIN 6
+#define MOUSE_SCROLL_PIN A0
+
 // TODO: SCALE DOES NOT WORK
 
 typedef struct {
@@ -47,13 +51,18 @@ Vector3 gyroError = zero;
 Vector3 accelError = zero;
 
 bool gotAcknowledge = false;
-bool b = false;
+bool timerFlag = false;
 unsigned long diff = 0;
 unsigned long prevMicros = 0;
+int prevScroll = 0;
+int currScroll;
+int deltaScroll;
 
 void setup() {
-  pinMode(5, INPUT);
-  pinMode(6, INPUT);
+  pinMode(MOUSE_L_PIN, INPUT);
+  pinMode(MOUSE_R_PIN, INPUT);
+  pinMode(MOUSE_SCROLL_PIN, INPUT);
+
   Serial.begin(115200); // for bluetooth module HC-05
   resetMPU6050();
   delay(1);
@@ -62,15 +71,15 @@ void setup() {
   calibrateAccel();
   delay(1);
 
-//  Serial.print("AT\r\n");
-//  delay(100);
-//  Serial.print("AT+VERSION?\r\n");
-//  delay(100);
-//  Serial.print("AT+NAME?\r\n");
-//  delay(100);
-//  Serial.print("AT+UART?\r\n");
-//  delay(100);
-//  Serial.print("AT+PSWD?\r\n");
+  //  Serial.print("AT\r\n");
+  //  delay(100);
+  //  Serial.print("AT+VERSION?\r\n");
+  //  delay(100);
+  //  Serial.print("AT+NAME?\r\n");
+  //  delay(100);
+  //  Serial.print("AT+UART?\r\n");
+  //  delay(100);
+  //  Serial.print("AT+PSWD?\r\n");
 
   cli(); // stop interrupts
 
@@ -94,12 +103,12 @@ ISR(TIMER1_COMPA_vect) {
   unsigned long currMicros = micros();
   diff = currMicros - prevMicros;
   prevMicros = currMicros;
-  b = true;
+  timerFlag = true;
 }
 void loop() {
-//  while (Serial.available() > 0) {
-//    Serial.print((char) Serial.read());
-//  }
+  //  while (Serial.available() > 0) {
+  //    Serial.print((char) Serial.read());
+  //  }
 
   while (Serial.available() > 0) {
     if (Serial.read() == 'A') {
@@ -117,9 +126,9 @@ void loop() {
   smoothingCache[smoothingCount] = readGyro();
   smoothingCount = (smoothingCount + 1) % smoothing;
 
-  if (b) {
+  if (timerFlag) {
     sendData();
-    b = false;
+    timerFlag = false;
   }
 
   //delayMicroseconds(100);
@@ -138,8 +147,30 @@ void sendData() {
   gyroSum = multiply(gyroSum, 1.0 / smoothing);
   byte* buf = (byte*) &gyroSum;
   Serial.write(buf, sizeof(Vector3));
-  byte buttonData = ((digitalRead(5) == HIGH) << 1) + (digitalRead(6) == HIGH);
+  byte buttonData = ((digitalRead(MOUSE_L_PIN) == HIGH) << 1) + (digitalRead(MOUSE_R_PIN) == HIGH);
   Serial.write(buttonData);
+
+  currScroll = analogRead(MOUSE_SCROLL_PIN);
+
+  bool isScrollPressed = currScroll > 30;
+
+  if (isScrollPressed) {
+    if (prevScroll == -1) {
+      prevScroll = currScroll;
+    }
+    deltaScroll = currScroll - prevScroll;
+    prevScroll = currScroll;
+  } else {
+    prevScroll = -1;
+  }
+
+  if (deltaScroll > 127) deltaScroll = 127;
+  if (deltaScroll < -128) deltaScroll = -128;
+  
+  byte scrollData = deltaScroll;
+  scrollData &= 0b11111110; // reset bit 0
+  scrollData |= isScrollPressed; // set bit 0 to pressed
+  Serial.write(scrollData);
 }
 
 void resetMPU6050() {
