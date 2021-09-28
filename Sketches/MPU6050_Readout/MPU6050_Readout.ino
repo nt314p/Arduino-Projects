@@ -46,11 +46,11 @@ int AFS_SEL = AFS_SEL_1;
 float LSB_PER_DEG_PER_SEC = SCALE_FACTORS[FS_SEL];
 float LSB_PER_G = A_SCALE_FACTORS[AFS_SEL];
 
-int calibrateIterations = 100;
+int calibrationIterations = 100;
 Vector3 gyroError = zero;
 Vector3 accelError = zero;
 
-bool gotAcknowledge = false;
+bool gotAcknowledge = true; // set this to enable/disable ack char
 bool timerFlag = false;
 unsigned long diff = 0;
 unsigned long prevMicros = 0;
@@ -147,8 +147,6 @@ void sendData() {
   gyroSum = multiply(gyroSum, 1.0 / smoothing);
   byte* buf = (byte*) &gyroSum;
   Serial.write(buf, sizeof(Vector3));
-  byte buttonData = ((digitalRead(MOUSE_L_PIN) == HIGH) << 1) + (digitalRead(MOUSE_R_PIN) == HIGH);
-  Serial.write(buttonData);
 
   currScroll = analogRead(MOUSE_SCROLL_PIN);
 
@@ -164,13 +162,11 @@ void sendData() {
     prevScroll = -1;
   }
 
-  if (deltaScroll > 127) deltaScroll = 127;
-  if (deltaScroll < -128) deltaScroll = -128;
+  Serial.write(deltaScroll);
   
-  byte scrollData = deltaScroll;
-  scrollData &= 0b11111110; // reset bit 0
-  scrollData |= isScrollPressed; // set bit 0 to pressed
-  Serial.write(scrollData);
+  byte buttonData = 0b10101000;
+  buttonData += (isScrollPressed << 2) + ((digitalRead(MOUSE_L_PIN) == HIGH) << 1) + (digitalRead(MOUSE_R_PIN) == HIGH);
+  Serial.write(buttonData); 
 }
 
 void resetMPU6050() {
@@ -202,21 +198,21 @@ void setAccelConfig() {
 
 Vector3 calibrateGyro() {
   Vector3 errorSum = zero;
-  for (int i = 0; i < calibrateIterations; ++i) {
+  for (int i = 0; i < calibrationIterations; ++i) {
     errorSum = add(errorSum, readGyro());
     delay(1);
   }
-  gyroError = multiply(errorSum, -1.0 / calibrateIterations);
+  gyroError = multiply(errorSum, -1.0 / calibrationIterations);
 }
 
 Vector3 calibrateAccel() {
   Vector3 errorSum = zero;
-  for (int i = 0; i < calibrateIterations; ++i) {
+  for (int i = 0; i < calibrationIterations; ++i) {
     errorSum = add(errorSum, readAccel());
     delay(1);
   }
-  errorSum = add(errorSum, { 0, 0, -calibrateIterations} ); // subtract off gravity (1g)
-  accelError = multiply(errorSum, -1.0 / calibrateIterations);
+  errorSum = add(errorSum, { 0, 0, -calibrationIterations} ); // subtract off gravity (1g)
+  accelError = multiply(errorSum, -1.0 / calibrationIterations);
 }
 
 Vector3 readGyro() {
