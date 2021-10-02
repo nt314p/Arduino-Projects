@@ -23,6 +23,10 @@
 #define MOUSE_L_PIN 5
 #define MOUSE_R_PIN 6
 #define MOUSE_SCROLL_PIN A0
+#define MOUSE_SCROLL_MIN 40
+
+#define gyroSmoothingLen 10
+#define scrollSmoothingLen 30
 
 // TODO: SCALE DOES NOT WORK
 
@@ -35,10 +39,12 @@ typedef struct {
 const float SCALE_FACTORS[] = {131, 65.5, 32.8, 16.4};
 const float A_SCALE_FACTORS[] = { 16384, 8192, 4096, 2048};
 
-int smoothing = 10;
-int smoothingCount = 0;
+int gyroSmoothingCount = 0;
 Vector3 zero = {0, 0, 0};
-Vector3 smoothingCache[] = {zero, zero, zero, zero, zero, zero, zero, zero, zero, zero};
+Vector3 gyroSmoothingBuffer[] = {zero, zero, zero, zero, zero, zero, zero, zero, zero, zero};
+
+int scrollSmoothingCount = 0;
+int scrollSmoothingBuffer[scrollSmoothingLen];
 
 int FS_SEL = FS_SEL_3;
 int AFS_SEL = AFS_SEL_1;
@@ -123,8 +129,11 @@ void loop() {
 
   if (!gotAcknowledge) return;
 
-  smoothingCache[smoothingCount] = readGyro();
-  smoothingCount = (smoothingCount + 1) % smoothing;
+  gyroSmoothingBuffer[gyroSmoothingCount] = readGyro();
+  gyroSmoothingCount = (gyroSmoothingCount + 1) % gyroSmoothingLen;
+
+  scrollSmoothingBuffer[scrollSmoothingCount] = analogRead(MOUSE_SCROLL_PIN);
+  scrollSmoothingCount = (scrollSmoothingCount + 1) % scrollSmoothingLen;
 
   if (timerFlag) {
     sendData();
@@ -141,16 +150,22 @@ void loop() {
 
 void sendData() {
   Vector3 gyroSum = zero;
-  for (int i = 0; i < smoothing; i++) {
-    gyroSum = add(gyroSum, smoothingCache[i]);
+  for (int i = 0; i < gyroSmoothingLen; i++) {
+    gyroSum = add(gyroSum, gyroSmoothingBuffer[i]);
   }
-  gyroSum = multiply(gyroSum, 1.0 / smoothing);
+  gyroSum = multiply(gyroSum, 1.0 / gyroSmoothingLen);
   byte* buf = (byte*) &gyroSum;
   Serial.write(buf, sizeof(Vector3));
 
-  currScroll = analogRead(MOUSE_SCROLL_PIN);
+  
 
-  bool isScrollPressed = currScroll > 30;
+  currScroll = 0;
+  for (int i = 0; i < scrollSmoothingLen; i++) {
+    currScroll += scrollSmoothingBuffer[i];
+  }
+  currScroll /= scrollSmoothingLen;
+
+  bool isScrollPressed = currScroll > MOUSE_SCROLL_MIN;
 
   if (isScrollPressed) {
     if (prevScroll == -1) {
