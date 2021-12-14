@@ -1,4 +1,5 @@
 #include <Wire.h>
+#include <SoftwareSerial.h>
 
 #define MPU 0x68
 #define GYRO_X 0x43
@@ -56,7 +57,6 @@ int calibrationIterations = 100;
 Vector3 gyroError = zero;
 Vector3 accelError = zero;
 
-bool gotAcknowledge = true; // set this to enable/disable ack char
 bool timerFlag = false;
 unsigned long diff = 0;
 unsigned long prevMicros = 0;
@@ -64,12 +64,16 @@ int prevScroll = 0;
 int currScroll;
 int deltaScroll;
 
+SoftwareSerial btSerial(9, 10);
+
 void setup() {
   pinMode(MOUSE_L_PIN, INPUT);
   pinMode(MOUSE_R_PIN, INPUT);
   pinMode(MOUSE_SCROLL_PIN, INPUT);
 
-  Serial.begin(115200); // for bluetooth module HC-05
+  Serial.begin(9600); // for bluetooth module HM-11
+  btSerial.begin(9600);
+
   resetMPU6050();
   delay(1);
   calibrateGyro();
@@ -77,15 +81,15 @@ void setup() {
   calibrateAccel();
   delay(1);
 
-  //  Serial.print("AT\r\n");
-  //  delay(100);
-  //  Serial.print("AT+VERSION?\r\n");
-  //  delay(100);
-  //  Serial.print("AT+NAME?\r\n");
-  //  delay(100);
-  //  Serial.print("AT+UART?\r\n");
-  //  delay(100);
-  //  Serial.print("AT+PSWD?\r\n");
+//  Serial.print("AT\r\n");
+//  delay(200);
+//  Serial.print("AT+VERSION?\r\n");
+//  delay(200);
+//  Serial.print("AT+NAME?\r\n");
+//  delay(200);
+//  Serial.print("AT+UART?\r\n");
+//  delay(200);
+//  Serial.print("AT+PSWD?\r\n");
 
   cli(); // stop interrupts
 
@@ -112,22 +116,14 @@ ISR(TIMER1_COMPA_vect) {
   timerFlag = true;
 }
 void loop() {
-  //  while (Serial.available() > 0) {
-  //    Serial.print((char) Serial.read());
-  //  }
 
-  while (Serial.available() > 0) {
-    if (Serial.read() == 'A') {
-      Serial.print('A');
-      gotAcknowledge = true;
-      while (Serial.available() > 0) { // empty in buffer
-        Serial.read();
-      }
-      delay(100);
-    }
-  }
+  if (btSerial.available())
+    Serial.write(btSerial.read());
+    
+  if (Serial.available())
+    btSerial.write(Serial.read());
 
-  if (!gotAcknowledge) return;
+  return;
 
   gyroSmoothingBuffer[gyroSmoothingCount] = readGyro();
   gyroSmoothingCount = (gyroSmoothingCount + 1) % gyroSmoothingLen;
@@ -155,9 +151,7 @@ void sendData() {
   }
   gyroSum = multiply(gyroSum, 1.0 / gyroSmoothingLen);
   byte* buf = (byte*) &gyroSum;
-  Serial.write(buf, sizeof(Vector3));
-
-  
+  btSerial.write(buf, sizeof(Vector3));
 
   currScroll = 0;
   for (int i = 0; i < scrollSmoothingLen; i++) {
@@ -177,11 +171,11 @@ void sendData() {
     prevScroll = -1;
   }
 
-  Serial.write(deltaScroll);
-  
+  btSerial.write(deltaScroll);
+
   byte buttonData = 0b10101000;
   buttonData += (isScrollPressed << 2) + ((digitalRead(MOUSE_L_PIN) == HIGH) << 1) + (digitalRead(MOUSE_R_PIN) == HIGH);
-  Serial.write(buttonData); 
+  btSerial.write(buttonData);
 }
 
 void resetMPU6050() {
