@@ -24,6 +24,7 @@
 
 #define MOUSE_L_PIN 5
 #define MOUSE_R_PIN 6
+#define MOUSE_M_PIN 7
 #define MOUSE_SCROLL_PIN A0
 #define MOUSE_SCROLL_MIN 40
 
@@ -40,21 +41,25 @@ typedef struct {
 } Vector3;
 
 const float SCALE_FACTORS[] = {131, 65.5, 32.8, 16.4};
-const float A_SCALE_FACTORS[] = { 16384, 8192, 4096, 2048};
+const float DEGREES_RANGE[] = {250, 500, 1000, 2000};
+const float A_SCALE_FACTORS[] = {16384, 8192, 4096, 2048};
+const float ACCEL_RANGE[] = {2, 4, 8, 16};
 const byte signature = 0b10101000;
 
 int gyroSmoothingCount = 0;
 Vector3 zero = {0, 0, 0};
 Vector3 gyroSmoothingBuffer[] = {zero, zero, zero, zero, zero, zero, zero, zero, zero, zero};
+short shortBuffer[3];
 
 int scrollSmoothingCount = 0;
 int scrollSmoothingBuffer[scrollSmoothingLen];
 
-int FS_SEL = FS_SEL_2;
+int FS_SEL = FS_SEL_1;
 int AFS_SEL = AFS_SEL_1;
 
 float LSB_PER_DEG_PER_SEC = SCALE_FACTORS[FS_SEL];
 float LSB_PER_G = A_SCALE_FACTORS[AFS_SEL];
+int MAX_DEGREES = DEGREES_RANGE[FS_SEL];
 
 Vector3 gyroError = zero;
 Vector3 accelError = zero;
@@ -71,6 +76,7 @@ void setup() {
   pinMode(13, OUTPUT);
   pinMode(MOUSE_L_PIN, INPUT);
   pinMode(MOUSE_R_PIN, INPUT);
+  pinMode(MOUSE_M_PIN, INPUT);
   pinMode(MOUSE_SCROLL_PIN, INPUT);
 
   Serial.begin(38400); // for bluetooth module HM-11
@@ -148,12 +154,14 @@ void sendData() {
   for (int i = 0; i < gyroSmoothingLen; i++) {
     gyroSum = add(gyroSum, gyroSmoothingBuffer[i]);
   }
+  
   gyroSum = multiply(gyroSum, 1.0 / gyroSmoothingLen);
 
   Vector3 accel = readAccel();
 
   //btSerial.write((byte*) &accel, sizeof(Vector3));
-  Serial.write((byte*) &gyroSum, sizeof(Vector3));
+  mapVecToShortArr(shortBuffer, gyroSum, MAX_DEGREES);
+  Serial.write((byte*) &shortBuffer, 3* sizeof(short));
 
   currScroll = 0;
   for (int i = 0; i < scrollSmoothingLen; i++) {
@@ -172,12 +180,20 @@ void sendData() {
   } else {
     prevScroll = -1;
   }
-
+  deltaScroll = 0;
   Serial.write(deltaScroll);
 
   byte buttonData = signature;
-  buttonData += (isScrollPressed << 2) + ((digitalRead(MOUSE_L_PIN) == HIGH) << 1) + (digitalRead(MOUSE_R_PIN) == HIGH);
+  buttonData += ((digitalRead(MOUSE_M_PIN) == HIGH) << 2) + ((digitalRead(MOUSE_L_PIN) == HIGH) << 1) + (digitalRead(MOUSE_R_PIN) == HIGH);
   Serial.write(buttonData);
+}
+
+// converts a vector3 into a byte array of length 6, with every two bytes representing a short
+// this short is the mapping of -range, +range (a float) to -short.MAX_VALUE, short.MAX_VALUE (32767)
+void mapVecToShortArr(short shorts[], Vector3 v, float range) {
+  shorts[0] = (short) (32767 * v.x / range);
+  shorts[1] = (short) (32767 * v.y / range);
+  shorts[2] = (short) (32767 * v.z / range);
 }
 
 void resetMPU6050() {
