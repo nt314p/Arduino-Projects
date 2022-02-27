@@ -98,23 +98,7 @@ void setup() {
 
 void loop() {
   if (Serial.available() > 0) {
-    char input = Serial.read();
-    if (input == 't') {
-      Serial.println(F("Testing..."));
-      char test = 'w';
-      switch (test) {
-        case 'r':
-          Serial.println(F("got r"));
-          byte result = 10;
-          break;
-        case 'w':
-          Serial.println(F("got w"));
-          break;
-        case 'd':
-          Serial.println(F("got d"));
-          break;
-      }
-    } else if (bufferLength < MAX_BUFFER_LENGTH) {
+    if (bufferLength < MAX_BUFFER_LENGTH) {
       writeBuffer(input);
     } else {
       Serial.println(F("Buffer overflow!"));

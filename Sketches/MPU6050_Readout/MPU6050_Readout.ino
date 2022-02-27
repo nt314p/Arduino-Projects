@@ -22,9 +22,10 @@
 #define AFS_SEL_2 2 //   8
 #define AFS_SEL_3 3 //  16
 
+#define BLE_PWR_PIN 2
 #define MOUSE_L_PIN 5
 #define MOUSE_R_PIN 6
-#define MOUSE_M_PIN 7
+#define MOUSE_M_PIN 3
 #define MOUSE_SCROLL_PIN A0
 #define MOUSE_SCROLL_MIN 40
 
@@ -68,6 +69,9 @@ volatile bool timerFlag = false;
 unsigned long diff = 0;
 unsigned long prevMicros = 0;
 
+volatile bool awake = false;
+bool isBlePowered = false;
+
 int prevScroll = 0;
 int currScroll;
 int deltaScroll;
@@ -78,8 +82,11 @@ void setup() {
   pinMode(MOUSE_R_PIN, INPUT);
   pinMode(MOUSE_M_PIN, INPUT);
   pinMode(MOUSE_SCROLL_PIN, INPUT);
+  pinMode(BLE_PWR_PIN, OUTPUT);
+  digitalWrite(BLE_PWR_PIN, LOW);
 
   Serial.begin(38400); // for bluetooth module HM-11
+  //Serial.println("AT+SLEEP\r\n");
 
   resetMPU6050();
   delay(1);
@@ -88,24 +95,11 @@ void setup() {
   calibrateAccel();
   delay(1);
 
-  //  Serial.print("AT+BAUD1\r\n");
-  //  delay(100);
-
-  //  Serial.print("AT\r\n");
-  //  delay(200);
-  //  Serial.print("AT+VERSION?\r\n");
-  //  delay(200);
-  //  Serial.print("AT+NAME?\r\n");
-  //  delay(200);
-  //  Serial.print("AT+UART?\r\n");
-  //  delay(200);
-  //  Serial.print("AT+PSWD?\r\n");
-
   cli(); // stop interrupts
 
   TCCR1A = 0; // set entire TCCR1A register to 0
   TCCR1B = 0; // same for TCCR1B
-  TCNT1  = 0; // initialize counter value to 0
+  TCNT1 = 0; // initialize counter value to 0
 
   // 10 ms intervals
   OCR1A = 19999; // 0.01/(8/16e6) = 20000
@@ -116,12 +110,27 @@ void setup() {
   TIMSK1 |= (1 << OCIE1A);
 
   sei(); // enable interrupts
+
+  attachInterrupt(digitalPinToInterrupt(MOUSE_M_PIN), onMiddleBtnDown, RISING);
 }
 
 ISR(TIMER1_COMPA_vect) {
   timerFlag = true;
 }
+
+void onMiddleBtnDown() {
+  awake = true;
+}
+
 void loop() {
+  digitalWrite(13, (millis() % 1000) < 500); // heartbeat
+
+  if (!awake) return;
+  if (!isBlePowered) {
+    digitalWrite(BLE_PWR_PIN, HIGH);
+    isBlePowered = true;
+  }
+
   //  btSerial.write(255);
   //  return;
   //  while (btSerial.available())
@@ -132,13 +141,11 @@ void loop() {
   //
   //  return;
 
-  digitalWrite(13, (millis() % 1000) < 500);
-
   gyroSmoothingBuffer[gyroSmoothingCount] = readGyro();
   gyroSmoothingCount = (gyroSmoothingCount + 1) % gyroSmoothingLen;
 
-  scrollSmoothingBuffer[scrollSmoothingCount] = analogRead(MOUSE_SCROLL_PIN);
-  scrollSmoothingCount = (scrollSmoothingCount + 1) % scrollSmoothingLen;
+  //scrollSmoothingBuffer[scrollSmoothingCount] = analogRead(MOUSE_SCROLL_PIN);
+  //scrollSmoothingCount = (scrollSmoothingCount + 1) % scrollSmoothingLen;
 
   if (timerFlag) {
     unsigned long currMicros = micros();
@@ -154,14 +161,14 @@ void sendData() {
   for (int i = 0; i < gyroSmoothingLen; i++) {
     gyroSum = add(gyroSum, gyroSmoothingBuffer[i]);
   }
-  
+
   gyroSum = multiply(gyroSum, 1.0 / gyroSmoothingLen);
 
   Vector3 accel = readAccel();
 
   //btSerial.write((byte*) &accel, sizeof(Vector3));
   mapVecToShortArr(shortBuffer, gyroSum, MAX_DEGREES);
-  Serial.write((byte*) &shortBuffer, 3* sizeof(short));
+  Serial.write((byte*) &shortBuffer, 3 * sizeof(short));
 
   currScroll = 0;
   for (int i = 0; i < scrollSmoothingLen; i++) {
@@ -186,6 +193,23 @@ void sendData() {
   byte buttonData = signature;
   buttonData += ((digitalRead(MOUSE_M_PIN) == HIGH) << 2) + ((digitalRead(MOUSE_L_PIN) == HIGH) << 1) + (digitalRead(MOUSE_R_PIN) == HIGH);
   Serial.write(buttonData);
+}
+
+void setupBle() {
+  return;
+
+  digitalWrite(BLE_PWR_PIN, HIGH);
+  delay(2000);
+
+  Serial.begin(9600);
+  Serial.print("AT+NAMEGesture");
+  delay(100);
+  Serial.print("AT+NOTI1");
+  delay(100);
+  Serial.print("AT+POWE1");
+  delay(100);
+  Serial.print("AT+BAUD2");
+  delay(100);
 }
 
 // converts a vector3 into a byte array of length 6, with every two bytes representing a short
