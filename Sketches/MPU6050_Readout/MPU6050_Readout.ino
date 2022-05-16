@@ -1,5 +1,27 @@
 #include <Wire.h>
-#include <SoftwareSerial.h>
+
+// ---------
+/*
+#ifdef __arm__
+// should use uinstd.h to define sbrk but Due causes a conflict
+extern "C" char* sbrk(int incr);
+#else  // __ARM__
+extern char *__brkval;
+#endif  // __arm__
+
+int freeMemory() {
+  char top;
+#ifdef __arm__
+  return &top - reinterpret_cast<char*>(sbrk(0));
+#elif defined(CORE_TEENSY) || (ARDUINO > 103 && ARDUINO != 151)
+  return &top - __brkval;
+#else  // __arm__
+  return __brkval ? &top - __brkval : &top - __malloc_heap_start;
+#endif  // __arm__
+}*/
+
+
+// ---------
 
 #define MPU 0x68
 #define GYRO_X 0x43
@@ -26,20 +48,25 @@
 #define MOUSE_L_PIN 5
 #define MOUSE_R_PIN 6
 #define MOUSE_M_PIN 3
-#define MOUSE_SCROLL_PIN A0
-#define MOUSE_SCROLL_MIN 40
+#define CHARGE_KEY_PIN 4
 
 #define gyroSmoothingLen 10
-#define scrollSmoothingLen 30
 #define calibrationIterations 100
+#define sequentialSimilarGyroReadsThreshold 200
+#define simGyroTol 0.02
+
 
 // TODO: SCALE DOES NOT WORK?
 
-typedef struct {
+struct Vector3 {
   float x;
   float y;
   float z;
-} Vector3;
+};
+
+inline Vector3 add(Vector3 a, Vector3 b) __attribute__((always_inline));
+inline Vector3 multiply(Vector3 v, float scalar) __attribute__((always_inline));
+inline void mapVecToShortArr(short shorts[], Vector3 v, float range) __attribute__((always_inline));
 
 const float SCALE_FACTORS[] = {131, 65.5, 32.8, 16.4};
 const float DEGREES_RANGE[] = {250, 500, 1000, 2000};
@@ -51,9 +78,6 @@ int gyroSmoothingCount = 0;
 Vector3 zero = {0, 0, 0};
 Vector3 gyroSmoothingBuffer[] = {zero, zero, zero, zero, zero, zero, zero, zero, zero, zero};
 short shortBuffer[3];
-
-int scrollSmoothingCount = 0;
-int scrollSmoothingBuffer[scrollSmoothingLen];
 
 int FS_SEL = FS_SEL_1;
 int AFS_SEL = AFS_SEL_1;
@@ -69,8 +93,26 @@ volatile bool timerFlag = false;
 unsigned long diff = 0;
 unsigned long prevMicros = 0;
 
+// the time (in ms) when the last movement was recorded
+// a movement has an angular velocity greater than the threshold (in any axis)
+unsigned long lastMovementTimeMs;
+
+/*
+    Live gyro calibration:
+
+    We know that the gyro should be reporting similar nonzero values when not in motion.
+    We identify these values by comparing a standard gyro value we believe represents
+    the error (standardGyro) to a current gyro measurement. If the current gyro
+    measurement agrees (within some percent tolerance) with the standard, we increment
+    sequentialSimilarGyroReads. If the values to not agree, we reject the current
+    standard and replace it with the newly read one. When we accumulate enough sequential
+    similar reads, we recalibrate the gyro using our standard as the error.
+*/
+Vector3 standardGyro;
+int sequentialSimilarGyroReads;
+
 volatile bool awake = false;
-bool isBlePowered = false;
+bool isBLEPowered = false;
 
 int prevScroll = 0;
 int currScroll;
@@ -78,14 +120,19 @@ int deltaScroll;
 
 void setup() {
   pinMode(13, OUTPUT);
-  pinMode(MOUSE_L_PIN, INPUT);
-  pinMode(MOUSE_R_PIN, INPUT);
+  pinMode(MOUSE_L_PIN, INPUT_PULLUP);
+  pinMode(MOUSE_R_PIN, INPUT_PULLUP);
   pinMode(MOUSE_M_PIN, INPUT);
-  pinMode(MOUSE_SCROLL_PIN, INPUT);
   pinMode(BLE_PWR_PIN, OUTPUT);
+  pinMode(CHARGE_KEY_PIN, OUTPUT);
+  pinMode(0, OUTPUT);
+  digitalWrite(0, LOW);
   digitalWrite(BLE_PWR_PIN, LOW);
+  digitalWrite(CHARGE_KEY_PIN, HIGH);
 
-  Serial.begin(38400); // for bluetooth module HM-11
+  Serial.begin(38400);
+  Serial.println("Started");
+
   //Serial.println("AT+SLEEP\r\n");
 
   resetMPU6050();
@@ -112,6 +159,8 @@ void setup() {
   sei(); // enable interrupts
 
   attachInterrupt(digitalPinToInterrupt(MOUSE_M_PIN), onMiddleBtnDown, RISING);
+
+  lastMovementTimeMs = millis();
 }
 
 ISR(TIMER1_COMPA_vect) {
@@ -124,11 +173,16 @@ void onMiddleBtnDown() {
 
 void loop() {
   digitalWrite(13, (millis() % 1000) < 500); // heartbeat
+  //Serial.println(millis());
+
+  if (millis() - lastMovementTimeMs > 300 * 1000) {
+    awake = false;
+    powerOffBLE();
+  }
 
   if (!awake) return;
-  if (!isBlePowered) {
-    digitalWrite(BLE_PWR_PIN, HIGH);
-    isBlePowered = true;
+  if (!isBLEPowered) {
+    powerOnBLE();
   }
 
   //  btSerial.write(255);
@@ -141,11 +195,49 @@ void loop() {
   //
   //  return;
 
-  gyroSmoothingBuffer[gyroSmoothingCount] = readGyro();
-  gyroSmoothingCount = (gyroSmoothingCount + 1) % gyroSmoothingLen;
+  Vector3 currGyro = readGyro();
 
-  //scrollSmoothingBuffer[scrollSmoothingCount] = analogRead(MOUSE_SCROLL_PIN);
-  //scrollSmoothingCount = (scrollSmoothingCount + 1) % scrollSmoothingLen;
+  //Serial.println(gyroSmoothingCount);
+//  Serial.print(currGyro.x);
+//  Serial.print('\t');
+//  Serial.print(currGyro.y);
+//  Serial.print('\t');
+//  Serial.println(currGyro.z);
+
+//  float dx = abs(currGyro.x - standardGyro.x);
+//  float dy = abs(currGyro.y - standardGyro.y);
+//  float dz = abs(currGyro.z - standardGyro.z);
+
+//  if (dx < standardGyro.x * simGyroTol && dy < standardGyro.y * simGyroTol && dz < standardGyro.z * simGyroTol) {
+//    sequentialSimilarGyroReads++;
+//
+//    if (sequentialSimilarGyroReads >= sequentialSimilarGyroReadsThreshold) {
+//      Serial.println("Calibrating...");
+//      gyroError = { -standardGyro.x, -standardGyro.y, -standardGyro.z };
+//    }
+//  } else {
+//    sequentialSimilarGyroReads = 0;
+//    standardGyro = currGyro;
+//  }
+
+  gyroSmoothingBuffer[gyroSmoothingCount] = currGyro;
+
+//  if (abs(currGyro.x) > 3 || abs(currGyro.y) > 3 || abs(currGyro.z) > 3) {
+//    lastMovementTimeMs = millis();
+//  }
+
+  gyroSmoothingCount++;
+  if (gyroSmoothingCount >= gyroSmoothingLen) gyroSmoothingCount = 0;
+
+  if (digitalRead(MOUSE_L_PIN) == LOW) {
+    digitalWrite(CHARGE_KEY_PIN, LOW);
+    delay(80);
+    digitalWrite(CHARGE_KEY_PIN, HIGH);
+    delay(80);
+    digitalWrite(CHARGE_KEY_PIN, LOW);
+    delay(80);
+    digitalWrite(CHARGE_KEY_PIN, HIGH);
+  }
 
   if (timerFlag) {
     unsigned long currMicros = micros();
@@ -170,30 +262,22 @@ void sendData() {
   mapVecToShortArr(shortBuffer, gyroSum, MAX_DEGREES);
   Serial.write((byte*) &shortBuffer, 3 * sizeof(short));
 
-  currScroll = 0;
-  for (int i = 0; i < scrollSmoothingLen; i++) {
-    currScroll += scrollSmoothingBuffer[i];
-  }
-  currScroll /= scrollSmoothingLen;
-
-  bool isScrollPressed = currScroll > MOUSE_SCROLL_MIN;
-
-  if (isScrollPressed) {
-    if (prevScroll == -1) {
-      prevScroll = currScroll;
-    }
-    deltaScroll = currScroll - prevScroll;
-    prevScroll = currScroll;
-  } else {
-    prevScroll = -1;
-  }
-  deltaScroll = 0;
-  Serial.write(deltaScroll);
-
   byte buttonData = signature;
-  buttonData += ((digitalRead(MOUSE_M_PIN) == HIGH) << 2) + ((digitalRead(MOUSE_L_PIN) == HIGH) << 1) + (digitalRead(MOUSE_R_PIN) == HIGH);
+  buttonData += ((digitalRead(MOUSE_M_PIN) == HIGH) << 2) + ((digitalRead(MOUSE_L_PIN) == LOW) << 1) + (digitalRead(MOUSE_R_PIN) == LOW);
   Serial.write(buttonData);
 }
+
+const char* setupCommands[] = {
+  "NAMERemy", // *Remy*
+  "NOTI1", // enable connect/disconnect notification
+  "TYPE3", // auth and bond
+  "PASS802048",
+  "POWE1", // -6dbm
+  "COMI0", // min connection interval 7.5 ms
+  "COMA0", // max connection interval 7.5 ms
+  "ADVI2", // advertising interval 211.25 ms
+  "BAUD2" // set baud rate to 38400 bps
+};
 
 void setupBle() {
   return;
@@ -202,14 +286,32 @@ void setupBle() {
   delay(2000);
 
   Serial.begin(9600);
-  Serial.print("AT+NAMEGesture");
+  Serial.print("AT+NAMERemy");
   delay(100);
   Serial.print("AT+NOTI1");
   delay(100);
   Serial.print("AT+POWE1");
   delay(100);
+  Serial.print("AT+ADVI4");
+  delay(100);
+
   Serial.print("AT+BAUD2");
   delay(100);
+
+}
+
+void powerOnBLE() {
+  isBLEPowered = true;
+  digitalWrite(BLE_PWR_PIN, HIGH);
+  Serial.begin(38400);
+}
+
+void powerOffBLE() {
+  isBLEPowered = false;
+  Serial.end();
+  digitalWrite(BLE_PWR_PIN, LOW);
+  pinMode(0, OUTPUT);
+  digitalWrite(0, LOW);
 }
 
 // converts a vector3 into a byte array of length 6, with every two bytes representing a short
@@ -294,4 +396,22 @@ Vector3 add(Vector3 a, Vector3 b) {
 
 Vector3 multiply(Vector3 v, float scalar) {
   return {v.x * scalar, v.y * scalar, v.z * scalar};
+}
+
+uint8_t * heapptr, * stackptr;
+void check_mem() {
+  stackptr = (uint8_t *)malloc(4);          // use stackptr temporarily
+  heapptr = stackptr;                     // save value of heap pointer
+  free(stackptr);      // free up the memory again (sets stackptr to 0)
+  stackptr =  (uint8_t *)(SP);           // save value of stack pointer
+}
+
+int freeMem() {
+  return (uint8_t)stackptr - (uint8_t) heapptr;
+}
+
+int freeRam () {
+  extern int __heap_start, *__brkval;
+  int v;
+  return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval);
 }
