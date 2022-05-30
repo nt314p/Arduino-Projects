@@ -1,28 +1,5 @@
 #include <Wire.h>
 
-// ---------
-/*
-#ifdef __arm__
-// should use uinstd.h to define sbrk but Due causes a conflict
-extern "C" char* sbrk(int incr);
-#else  // __ARM__
-extern char *__brkval;
-#endif  // __arm__
-
-int freeMemory() {
-  char top;
-#ifdef __arm__
-  return &top - reinterpret_cast<char*>(sbrk(0));
-#elif defined(CORE_TEENSY) || (ARDUINO > 103 && ARDUINO != 151)
-  return &top - __brkval;
-#else  // __arm__
-  return __brkval ? &top - __brkval : &top - __malloc_heap_start;
-#endif  // __arm__
-}*/
-
-
-// ---------
-
 #define MPU 0x68
 #define GYRO_X 0x43
 #define ACCEL_X 0x3B
@@ -49,11 +26,11 @@ int freeMemory() {
 #define MOUSE_R_PIN 6
 #define MOUSE_M_PIN 3
 #define CHARGE_KEY_PIN 4
+#define MPU_PWR_PIN 7
 
 #define gyroSmoothingLen 10
-#define calibrationIterations 100
+#define calibrationIterations 200
 #define sequentialSimilarGyroReadsThreshold 200
-#define simGyroTol 0.02
 
 
 // TODO: SCALE DOES NOT WORK?
@@ -100,16 +77,20 @@ unsigned long lastMovementTimeMs;
 /*
     Live gyro calibration:
 
-    We know that the gyro should be reporting similar nonzero values when not in motion.
-    We identify these values by comparing a standard gyro value we believe represents
-    the error (standardGyro) to a current gyro measurement. If the current gyro
-    measurement agrees (within some percent tolerance) with the standard, we increment
-    sequentialSimilarGyroReads. If the values to not agree, we reject the current
-    standard and replace it with the newly read one. When we accumulate enough sequential
-    similar reads, we recalibrate the gyro using our standard as the error.
+    Detection of no movement:
+    The absolute difference between the current and previous gyro measurement
+    is calculated. If each difference (in deg/s) is less than 0.3 deg/s, a
+    counter is incremented (sequentialSimilarGyroReads). When this counter
+    exceeds a certain value, the gyro is determined to be not moving.
+
+    After no movement is detected, the average angular velocity is measured and 
+    evaluated for drift. If any xyz angular velocity exceeds a magnitude of 
+    0.4 deg/sec, then calibration is performed.
 */
-Vector3 standardGyro;
+Vector3 prevGyro;
 int sequentialSimilarGyroReads;
+const float degPerSecSimilarThreshold = 0.3;
+const float degPerSecDriftThreshold = 0.4;
 
 volatile bool awake = false;
 bool isBLEPowered = false;
@@ -124,10 +105,12 @@ void setup() {
   pinMode(MOUSE_R_PIN, INPUT_PULLUP);
   pinMode(MOUSE_M_PIN, INPUT);
   pinMode(BLE_PWR_PIN, OUTPUT);
+  pinMode(MPU_PWR_PIN, OUTPUT);
   pinMode(CHARGE_KEY_PIN, OUTPUT);
   pinMode(0, OUTPUT);
   digitalWrite(0, LOW);
   digitalWrite(BLE_PWR_PIN, LOW);
+  digitalWrite(MPU_PWR_PIN, LOW);
   digitalWrite(CHARGE_KEY_PIN, HIGH);
 
   Serial.begin(38400);
@@ -135,12 +118,12 @@ void setup() {
 
   //Serial.println("AT+SLEEP\r\n");
 
-  resetMPU6050();
-  delay(1);
+  powerOnMPU();
+  delay(50);
   calibrateGyro();
-  delay(1);
+  delay(10);
   calibrateAccel();
-  delay(1);
+  delay(10);
 
   cli(); // stop interrupts
 
@@ -168,21 +151,24 @@ ISR(TIMER1_COMPA_vect) {
 }
 
 void onMiddleBtnDown() {
+  lastMovementTimeMs = millis();
   awake = true;
 }
 
 void loop() {
-  digitalWrite(13, (millis() % 1000) < 500); // heartbeat
-  //Serial.println(millis());
+  digitalWrite(13, (millis() % 1000) < 8); // heartbeat
 
   if (millis() - lastMovementTimeMs > 300 * 1000) {
     awake = false;
-    powerOffBLE();
+    //powerOffBLE();
+    powerOffMPU();
   }
 
   if (!awake) return;
   if (!isBLEPowered) {
-    powerOnBLE();
+    isBLEPowered = true;
+    //powerOnBLE();
+    //powerOnMPU();
   }
 
   //  btSerial.write(255);
@@ -196,40 +182,51 @@ void loop() {
   //  return;
 
   Vector3 currGyro = readGyro();
+  float dx = abs(currGyro.x - prevGyro.x);
+  float dy = abs(currGyro.y - prevGyro.y);
+  float dz = abs(currGyro.z - prevGyro.z);
 
-  //Serial.println(gyroSmoothingCount);
-//  Serial.print(currGyro.x);
-//  Serial.print('\t');
-//  Serial.print(currGyro.y);
-//  Serial.print('\t');
-//  Serial.println(currGyro.z);
+  Serial.print(dx);
+  Serial.print('\t');
+  Serial.print(dy);
+  Serial.print('\t');
+  Serial.println(dz);
 
-//  float dx = abs(currGyro.x - standardGyro.x);
-//  float dy = abs(currGyro.y - standardGyro.y);
-//  float dz = abs(currGyro.z - standardGyro.z);
+  if (dx < degPerSecSimilarThreshold || dy < degPerSecSimilarThreshold || dz < degPerSecSimilarThreshold) {
+    sequentialSimilarGyroReads++;
+  } else {
+    sequentialSimilarGyroReads = 0;
+  }
 
-//  if (dx < standardGyro.x * simGyroTol && dy < standardGyro.y * simGyroTol && dz < standardGyro.z * simGyroTol) {
-//    sequentialSimilarGyroReads++;
-//
-//    if (sequentialSimilarGyroReads >= sequentialSimilarGyroReadsThreshold) {
-//      Serial.println("Calibrating...");
-//      gyroError = { -standardGyro.x, -standardGyro.y, -standardGyro.z };
-//    }
-//  } else {
-//    sequentialSimilarGyroReads = 0;
-//    standardGyro = currGyro;
-//  }
+  if (sequentialSimilarGyroReads >= sequentialSimilarGyroReadsThreshold) {
+    Serial.println(millis());
+    Serial.println("Device is still");
+    
+    // TODO: instead of using currGyro, get some measure of the average of past gyro readings
+    if (currGyro.x > degPerSecDriftThreshold || currGyro.y > degPerSecDriftThreshold || currGyro.z > degPerSecDriftThreshold) {
+      Serial.println("Should calibrate");
+    } else {
+      Serial.println("No calibration needed");
+    }
+  }
+
+  //  Serial.print(currGyro.x);
+  //  Serial.print('\t');
+  //  Serial.print(currGyro.y);
+  //  Serial.print('\t');
+  //  Serial.println(currGyro.z);
 
   gyroSmoothingBuffer[gyroSmoothingCount] = currGyro;
 
-//  if (abs(currGyro.x) > 3 || abs(currGyro.y) > 3 || abs(currGyro.z) > 3) {
-//    lastMovementTimeMs = millis();
-//  }
+  if (abs(currGyro.x) > 3 || abs(currGyro.y) > 3 || abs(currGyro.z) > 3) {
+    lastMovementTimeMs = millis();
+    //Serial.println("Movement");
+  }
 
   gyroSmoothingCount++;
   if (gyroSmoothingCount >= gyroSmoothingLen) gyroSmoothingCount = 0;
 
-  if (digitalRead(MOUSE_L_PIN) == LOW) {
+  if (digitalRead(MOUSE_L_PIN) == LOW) { // testing for sleep functionality
     digitalWrite(CHARGE_KEY_PIN, LOW);
     delay(80);
     digitalWrite(CHARGE_KEY_PIN, HIGH);
@@ -239,6 +236,9 @@ void loop() {
     digitalWrite(CHARGE_KEY_PIN, HIGH);
   }
 
+  prevGyro = currGyro;
+
+  return;
   if (timerFlag) {
     unsigned long currMicros = micros();
     diff = currMicros - prevMicros;
@@ -258,7 +258,6 @@ void sendData() {
 
   Vector3 accel = readAccel();
 
-  //btSerial.write((byte*) &accel, sizeof(Vector3));
   mapVecToShortArr(shortBuffer, gyroSum, MAX_DEGREES);
   Serial.write((byte*) &shortBuffer, 3 * sizeof(short));
 
@@ -279,7 +278,7 @@ const char* setupCommands[] = {
   "BAUD2" // set baud rate to 38400 bps
 };
 
-void setupBle() {
+void setupBle() { // iterate through setup commands and exec
   return;
 
   digitalWrite(BLE_PWR_PIN, HIGH);
@@ -308,10 +307,10 @@ void powerOnBLE() {
 
 void powerOffBLE() {
   isBLEPowered = false;
-  Serial.end();
   digitalWrite(BLE_PWR_PIN, LOW);
-  pinMode(0, OUTPUT);
-  digitalWrite(0, LOW);
+  //Serial.end();
+  //pinMode(0, OUTPUT);
+  //digitalWrite(0, LOW);
 }
 
 // converts a vector3 into a byte array of length 6, with every two bytes representing a short
@@ -322,7 +321,17 @@ void mapVecToShortArr(short shorts[], Vector3 v, float range) {
   shorts[2] = (short) (32767 * v.z / range);
 }
 
-void resetMPU6050() {
+void powerOnMPU() {
+  digitalWrite(MPU_PWR_PIN, HIGH);
+  delay(10);
+  setupMPU();
+}
+
+void powerOffMPU() {
+  digitalWrite(MPU_PWR_PIN, LOW);
+}
+
+void setupMPU() {
   Wire.begin();
   Wire.beginTransmission(MPU);
   Wire.write(MPU_PWR_MGMT_1); // select the power management register
@@ -350,19 +359,29 @@ void setAccelConfig() {
 }
 
 Vector3 calibrateGyro() {
+  Serial.print(gyroError.x);
+  Serial.print('\t');
+  Serial.print(gyroError.y);
+  Serial.print('\t');
+  Serial.println(gyroError.z);
   Vector3 errorSum = zero;
   for (int i = 0; i < calibrationIterations; ++i) {
     errorSum = add(errorSum, readGyro());
-    delay(1);
+    delay(2);
   }
   gyroError = multiply(errorSum, -1.0 / calibrationIterations);
+  Serial.print(gyroError.x);
+  Serial.print('\t');
+  Serial.print(gyroError.y);
+  Serial.print('\t');
+  Serial.println(gyroError.z);
 }
 
 Vector3 calibrateAccel() {
   Vector3 errorSum = zero;
   for (int i = 0; i < calibrationIterations; ++i) {
     errorSum = add(errorSum, readAccel());
-    delay(1);
+    delay(2);
   }
   errorSum = add(errorSum, { 0, 0, -calibrationIterations} ); // subtract off gravity (1g)
   accelError = multiply(errorSum, -1.0 / calibrationIterations);
@@ -396,22 +415,4 @@ Vector3 add(Vector3 a, Vector3 b) {
 
 Vector3 multiply(Vector3 v, float scalar) {
   return {v.x * scalar, v.y * scalar, v.z * scalar};
-}
-
-uint8_t * heapptr, * stackptr;
-void check_mem() {
-  stackptr = (uint8_t *)malloc(4);          // use stackptr temporarily
-  heapptr = stackptr;                     // save value of heap pointer
-  free(stackptr);      // free up the memory again (sets stackptr to 0)
-  stackptr =  (uint8_t *)(SP);           // save value of stack pointer
-}
-
-int freeMem() {
-  return (uint8_t)stackptr - (uint8_t) heapptr;
-}
-
-int freeRam () {
-  extern int __heap_start, *__brkval;
-  int v;
-  return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval);
 }
