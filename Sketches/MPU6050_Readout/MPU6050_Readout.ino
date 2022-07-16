@@ -30,7 +30,7 @@
 #define CHARGE_KEY_PIN 4
 #define MPU_PWR_PIN 7
 
-#define gyroSmoothingLen 10
+#define gyroSmoothingLen 8
 #define calibrationIterations 5000
 
 // TODO: SCALE DOES NOT WORK?
@@ -54,7 +54,7 @@ const byte signature = 0b10101000;
 int gyroSmoothingCount = 0;
 const Vector3 zero = {0, 0, 0};
 Vector3 currGyro = zero;
-Vector3 gyroSmoothingBuffer[] = {zero, zero, zero, zero, zero, zero, zero, zero, zero, zero};
+Vector3 gyroSmoothingBuffer[] = {zero, zero, zero, zero, zero, zero, zero, zero};
 short shortBuffer[3];
 
 // gyro and accelerometer precision
@@ -76,6 +76,7 @@ unsigned long prevMicros = 0;
 // a movement has an angular velocity greater than the threshold (in any axis)
 unsigned long lastMovementTimeMs;
 const float degPerSecMovementThreshold = 3.5;
+const int sleepTimeMins = 5; // sleep after x minutes of no movement
 
 volatile bool awake = false;
 bool isBLEPowered = false;
@@ -142,7 +143,7 @@ void loop() {
   PORTB |= lit << 5; // pin 13
   PORTB &= 0b11011111 | (lit << 5);
 
-  if (currMs - lastMovementTimeMs > 300 * 1000) {
+  if (currMs - lastMovementTimeMs > 1000 * 60 * sleepTimeMins) {
     awake = false;
     //powerOffBLE();
     powerOffMPU();
