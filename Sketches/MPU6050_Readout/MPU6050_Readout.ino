@@ -11,7 +11,7 @@
 #define MPU_DEVICE_RESET 0b00010001  // bit banging is MSB first
 #define MPU_DEVICE_SLEEP 0b00010010
 
-//               +- deg/sec
+//                  +- deg/sec
 #define FS_SEL_0 0  //   250
 #define FS_SEL_1 1  //   500
 #define FS_SEL_2 2  //  1000
@@ -30,15 +30,27 @@
 #define CHARGE_KEY_PIN 4
 #define MPU_PWR_PIN 7
 
-#define gyroSmoothingLen 8
+#define GYRO_BUFFER_LEN 8
 #define calibrationIterations 5000
 
-// TODO: SCALE DOES NOT WORK?
+//#define BLE_DEBUG // Access to BLE AT commands without using software serial
 
 struct Vector3 {
   float x;
   float y;
   float z;
+};
+
+struct Vector3Short {
+  short x;
+  short y;
+  short z;
+};
+
+struct Packet {
+  Vector3Short gyro;
+  byte buttonData;
+  byte dummy;
 };
 
 inline Vector3 add(Vector3 a, Vector3 b) __attribute__((always_inline));
@@ -47,25 +59,28 @@ inline void mapVecToShortArr(short shorts[], Vector3 v, float range) __attribute
 
 const float SCALE_FACTORS[] = { 131, 65.5, 32.8, 16.4 };
 const float DEGREES_RANGE[] = { 250, 500, 1000, 2000 };
-const float A_SCALE_FACTORS[] = { 16384, 8192, 4096, 2048 };
+const float ACCEL_SCALE_FACTORS[] = { 16384, 8192, 4096, 2048 };
 const float ACCEL_RANGE[] = { 2, 4, 8, 16 };
-const byte Signature = 0b10101000;
+const byte SIGNATURE = 0b10101000;
 
-int gyroSmoothingCount = 0;
+int gyroBufferIndex = 0;
 const Vector3 zero = { 0, 0, 0 };
 Vector3 currGyro = zero;
-Vector3 gyroSmoothingBuffer[] = { zero, zero, zero, zero, zero, zero, zero, zero };
+Vector3 gyroSmoothingBuffer[GYRO_BUFFER_LEN] = {};
 short shortBuffer[3];
 
+Packet packet = { 0 };
+
 // gyro and accelerometer precision
+// TODO: Scale does not work?
 const int FS_SEL = FS_SEL_1;
 const int AFS_SEL = AFS_SEL_1;
 
 const float LSB_PER_DEG_PER_SEC = SCALE_FACTORS[FS_SEL];
-const float LSB_PER_G = A_SCALE_FACTORS[AFS_SEL];
+const float LSB_PER_G = ACCEL_SCALE_FACTORS[AFS_SEL];
 const int MAX_DEGREES = DEGREES_RANGE[FS_SEL];
 
-Vector3 gyroError = { -8.643, -3.785f, -0.642f };  //zero;
+Vector3 gyroError = { -8.643f, -3.785f, -0.642f };
 Vector3 accelError = zero;
 
 volatile bool timerFlag = false;
@@ -75,8 +90,8 @@ unsigned long prevMicros = 0;
 // the time (in ms) when the last movement was recorded
 // a movement has an angular velocity greater than the threshold (in any axis)
 unsigned long lastMovementTimeMs;
-const float degPerSecMovementThreshold = 3.5;
-const int sleepTimeMins = 5;  // sleep after x minutes of no movement
+const float degPerSecMovementThreshold = 8.0f;
+const int SLEEP_TIME_MINS = 5;  // sleep after x minutes of no movement
 
 volatile bool awake = false;
 bool isBLEPowered = false;
@@ -136,6 +151,8 @@ void onMiddleBtnDown() {
   awake = true;
 }
 
+// ~360 us per loop
+
 void loop() {
   unsigned long currMs = millis();
 
@@ -144,7 +161,12 @@ void loop() {
   PORTB |= lit << 5;  // pin 13, built in LED
   PORTB &= 0b11011111 | (lit << 5);
 
-  if (currMs - lastMovementTimeMs > 1000 * 60 * sleepTimeMins) {
+#ifdef BLE_DEBUG
+  doBLECommands();
+  return;
+#endif
+
+  if (currMs - lastMovementTimeMs > 1000 * 60 * SLEEP_TIME_MINS) {
     awake = false;
     //powerOffBLE();
     powerOffMPU();
@@ -153,33 +175,37 @@ void loop() {
   if (!awake) return;
   if (!isBLEPowered) {
     isBLEPowered = true;
-    //powerOnBLE();
+    powerOnBLE();
     //powerOnMPU();
   }
 
   readGyro(&currGyro);
-  gyroSmoothingBuffer[gyroSmoothingCount] = currGyro;
+  gyroSmoothingBuffer[gyroBufferIndex] = currGyro;
 
   // check for movement
+  /*
   if (abs(currGyro.x) > degPerSecMovementThreshold || abs(currGyro.y) > degPerSecMovementThreshold || abs(currGyro.z) > degPerSecMovementThreshold) {
     lastMovementTimeMs = currMs;
     Serial.println("Movement");
-  }
+  }*/
 
-  gyroSmoothingCount++;
-  if (gyroSmoothingCount >= gyroSmoothingLen) gyroSmoothingCount = 0;
+  gyroBufferIndex++;
+  if (gyroBufferIndex >= GYRO_BUFFER_LEN) {
+    gyroBufferIndex = 0;
+
+    unsigned long currUs = micros();
+    //Serial.println(currUs - prevMicros);
+    prevMicros = currUs;
+  }
 
   if (digitalRead(MOUSE_L_PIN) == LOW) {  // testing for sleep functionality
     powerOffDevice();
   }
 
-  unsigned long currUs = micros();
 
-  if (currMs % 1000 == 0) Serial.println(currUs - prevMicros);
+  //if (currMs % 1000 == 0) Serial.println(currUs - prevMicros);
 
-  prevMicros = currUs;
-
-  return;
+  //return;
   if (timerFlag) {
     unsigned long currMicros = micros();
     diff = currMicros - prevMicros;
@@ -191,29 +217,30 @@ void loop() {
 
 void sendData() {
   Vector3 gyroSum = zero;
-  for (int i = 0; i < gyroSmoothingLen; i++) {  // TODO: Is smoothing even necessary?
+  for (int i = 0; i < GYRO_BUFFER_LEN; i++) {  // TODO: Is smoothing even necessary?
     gyroSum = add(gyroSum, gyroSmoothingBuffer[i]);
   }
 
-  gyroSum = multiply(gyroSum, 1.0 / gyroSmoothingLen);
+  gyroSum = multiply(gyroSum, 1.0 / GYRO_BUFFER_LEN);
 
   Vector3 accel = readAccel();
 
   mapVecToShortArr(shortBuffer, gyroSum, MAX_DEGREES);
+
   Serial.write((byte*)&shortBuffer, 3 * sizeof(short));
 
-  byte buttonData = Signature | ((digitalRead(MOUSE_M_PIN) == HIGH) << 2) | ((digitalRead(MOUSE_L_PIN) == LOW) << 1) | (digitalRead(MOUSE_R_PIN) == LOW);
+  byte buttonData = SIGNATURE | ((digitalRead(MOUSE_M_PIN) == LOW) << 2) | ((digitalRead(MOUSE_L_PIN) == LOW) << 1) | (digitalRead(MOUSE_R_PIN) == LOW);
 
   Serial.write(buttonData);
 }
 
 void powerOffDevice() {
   digitalWrite(CHARGE_KEY_PIN, LOW);
-  delay(80);
+  delay(120);
   digitalWrite(CHARGE_KEY_PIN, HIGH);
-  delay(80);
+  delay(120);
   digitalWrite(CHARGE_KEY_PIN, LOW);
-  delay(80);
+  delay(120);
   digitalWrite(CHARGE_KEY_PIN, HIGH);
 }
 
@@ -320,7 +347,8 @@ void setAccelConfig() {
     delay(2);
   }
   gyroError = multiply(errorSum, -1.0 / calibrationIterations);
-  }*/
+  }
+  */
 
 Vector3 calibrateAccel() {
   Vector3 errorSum = zero;
@@ -355,10 +383,10 @@ Vector3 readAccel() {
   Wire.write(ACCEL_X);
   Wire.endTransmission(false);
   Wire.requestFrom(MPU, 6, true);
-  float accelX = (Wire.read() << 8 | Wire.read()) / LSB_PER_G;  // TODO: see if error implementation is necessary
-  float accelY = (Wire.read() << 8 | Wire.read()) / LSB_PER_G;
-  float accelZ = (Wire.read() << 8 | Wire.read()) / LSB_PER_G;
-  return add({ accelX, accelY, accelZ }, accelError);
+  float accelX = (Wire.read() << 8 | Wire.read()) / LSB_PER_G + accelError.x;  // TODO: see if error implementation is necessary
+  float accelY = (Wire.read() << 8 | Wire.read()) / LSB_PER_G + accelError.y;
+  float accelZ = (Wire.read() << 8 | Wire.read()) / LSB_PER_G + accelError.z;
+  return { accelX, accelY, accelZ };
 }
 
 Vector3 add(Vector3 a, Vector3 b) {
@@ -368,3 +396,64 @@ Vector3 add(Vector3 a, Vector3 b) {
 Vector3 multiply(Vector3 v, float scalar) {
   return { v.x * scalar, v.y * scalar, v.z * scalar };
 }
+
+#ifdef BLE_DEBUG
+void doBLECommands() {
+  static char buffer[64];
+  static int index = 0;
+  static bool isArduinoSender = true;
+
+  if (isArduinoSender) {
+    digitalWrite(BLE_PWR_PIN, LOW);
+
+    if (!Serial.available()) return;
+    delay(50);  // wait for full message
+    index = 0;
+
+    char input = Serial.read();
+
+    while (input != '\n') {
+      buffer[index] = input;
+      index++;
+
+      while (!Serial.available())
+        ;
+
+      input = Serial.read();
+    }
+    buffer[index] = 0;
+
+    Serial.print("\nCommand: ");
+
+    Serial.end();
+
+    digitalWrite(BLE_PWR_PIN, HIGH);
+
+    delay(700);
+
+    Serial.begin(38400);
+
+    Serial.print((char*)buffer);
+    isArduinoSender = false;
+  } else {
+    if (!Serial.available()) return;
+    delay(50);  // wait for message to get sent from BLE
+
+    index = 0;
+
+    while (Serial.available() > 0) {
+      buffer[index] = Serial.read();
+      index++;
+    }
+
+    buffer[index] = 0;
+
+    digitalWrite(BLE_PWR_PIN, LOW);
+    delay(50);
+
+    Serial.print("\nFrom BLE: ");
+    Serial.print((char*)buffer);
+    isArduinoSender = true;
+  }
+}
+#endif
