@@ -3,10 +3,10 @@
 #include <Wire.h>
 
 #define MPU 0x68
-#define GYRO_X 0x43
-#define ACCEL_X 0x3B
-#define GYRO_CONFIG 0x1B
-#define ACCEL_CONFIG 0x1C
+#define MPU_GYRO_XOUT 0x43
+#define MPU_ACCEL_XOUT 0x3B
+#define MPU_GYRO_CONFIG 0x1B
+#define MPU_ACCEL_CONFIG 0x1C
 #define MPU_PWR_MGMT_1 0x6B
 #define MPU_DEVICE_RESET 0b00010001  // bit banging is MSB first
 #define MPU_DEVICE_SLEEP 0b00010010
@@ -35,10 +35,19 @@
 
 //#define BLE_DEBUG // Access to BLE AT commands without using software serial
 
+// TODO: is it possible to remove floating point ops?
+// could result in speed up and allow for more corrections on uC
+
 struct Vector3 {
   float x;
   float y;
   float z;
+};
+
+struct Vector3Int16 {
+  int16_t x;
+  int16_t y;
+  int16_t z;
 };
 
 struct Vector3Short {
@@ -80,6 +89,7 @@ const float LSB_PER_DEG_PER_SEC = SCALE_FACTORS[FS_SEL];
 const float LSB_PER_G = ACCEL_SCALE_FACTORS[AFS_SEL];
 const int MAX_DEGREES = DEGREES_RANGE[FS_SEL];
 
+// { -566, -248, -42 }
 Vector3 gyroError = { -8.643f, -3.785f, -0.642f };
 Vector3 accelError = zero;
 
@@ -121,21 +131,20 @@ void setup() {
   //calibrateAccel();
   //delay(10);
 
-  cli();  // stop interrupts
+  cli(); // stop interrupts
 
-  TCCR1A = 0;  // set entire TCCR1A register to 0
-  TCCR1B = 0;  // same for TCCR1B
-  TCNT1 = 0;   // initialize counter value to 0
+  TCCR1A = 0; // clear timer registers
+  TCCR1B = 0;
+  TCNT1 = 0; // initialize counter value to 0
 
   // 10 ms intervals
-  OCR1A = 19999;  // 0.01/(8/16e6) = 20000
-  // turn on CTC mode
-  TCCR1B |= (1 << WGM12);
+  OCR1A = 19999;  // 0.01 / (8 / 16e6) = 20000
+  
+  TCCR1B |= (1 << WGM12); // turn on CTC mode
   TCCR1B |= (1 << CS11);  // f_cpu/8 prescaler
-  // enable timer compare interrupt
-  TIMSK1 |= (1 << OCIE1A);
+  TIMSK1 = (1 << OCIE1A); // enable timer compare interrupt
 
-  sei();  // enable interrupts
+  sei(); // enable interrupts
 
   attachInterrupt(digitalPinToInterrupt(MOUSE_M_PIN), onMiddleBtnDown, RISING);
 
@@ -204,8 +213,8 @@ void loop() {
 
 
   //if (currMs % 1000 == 0) Serial.println(currUs - prevMicros);
-
   //return;
+
   if (timerFlag) {
     unsigned long currMicros = micros();
     diff = currMicros - prevMicros;
@@ -235,13 +244,12 @@ void sendData() {
 }
 
 void powerOffDevice() {
-  digitalWrite(CHARGE_KEY_PIN, LOW);
-  delay(120);
-  digitalWrite(CHARGE_KEY_PIN, HIGH);
-  delay(120);
-  digitalWrite(CHARGE_KEY_PIN, LOW);
-  delay(120);
-  digitalWrite(CHARGE_KEY_PIN, HIGH);
+  while (1) {
+    digitalWrite(CHARGE_KEY_PIN, LOW);
+    delay(120);
+    digitalWrite(CHARGE_KEY_PIN, HIGH);
+    delay(120);
+  }
 }
 
 const char* setupCommands[] = {
@@ -321,7 +329,7 @@ void setupMPU() {
 void setGyroConfig() {
   Wire.begin();
   Wire.beginTransmission(MPU);
-  Wire.write(GYRO_CONFIG);
+  Wire.write(MPU_GYRO_CONFIG);
   Wire.write(FS_SEL << 3);
   Wire.endTransmission(true);
 }
@@ -329,7 +337,7 @@ void setGyroConfig() {
 void setAccelConfig() {
   Wire.begin();
   Wire.beginTransmission(MPU);
-  Wire.write(ACCEL_CONFIG);
+  Wire.write(MPU_ACCEL_CONFIG);
   Wire.write(AFS_SEL << 3);
   Wire.endTransmission(true);
 }
@@ -350,6 +358,7 @@ void setAccelConfig() {
   }
   */
 
+/*
 Vector3 calibrateAccel() {
   Vector3 errorSum = zero;
   for (int i = 0; i < calibrationIterations; ++i) {
@@ -364,14 +373,25 @@ Vector3 calibrateAccel() {
   Serial.print(accelError.y, 5);
   Serial.print('\t');
   Serial.println(accelError.z, 5);
-}
+}*/
 
-void readGyro(Vector3* vec) {
+void readGyro(Vector3* vec) { // TODO: make a constant vector buffer for reading out gyro data
   Wire.beginTransmission(MPU);
   Wire.setClock(1000000);
-  Wire.write(GYRO_X);
+  Wire.write(MPU_GYRO_XOUT);
   Wire.endTransmission(false);
-  Wire.requestFrom(MPU, 6, true);                                                 // read the next six registers starting at GYRO_X
+  Wire.requestFrom(MPU, 6, true);                                                 // read the next six registers starting at MPU_GYRO_XOUT
+  vec->x = (Wire.read() << 8 | Wire.read()) / LSB_PER_DEG_PER_SEC + gyroError.x;  // TODO: avoid conversion to float
+  vec->y = (Wire.read() << 8 | Wire.read()) / LSB_PER_DEG_PER_SEC + gyroError.y;
+  vec->z = (Wire.read() << 8 | Wire.read()) / LSB_PER_DEG_PER_SEC + gyroError.z;
+}
+
+void readGyroInt16(Vector3Int16* vec) {
+  Wire.beginTransmission(MPU);
+  Wire.setClock(1000000);
+  Wire.write(MPU_GYRO_XOUT);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU, 6, true);                                                 // read the next six registers starting at MPU_GYRO_XOUT
   vec->x = (Wire.read() << 8 | Wire.read()) / LSB_PER_DEG_PER_SEC + gyroError.x;  // TODO: avoid conversion to float
   vec->y = (Wire.read() << 8 | Wire.read()) / LSB_PER_DEG_PER_SEC + gyroError.y;
   vec->z = (Wire.read() << 8 | Wire.read()) / LSB_PER_DEG_PER_SEC + gyroError.z;
@@ -380,7 +400,7 @@ void readGyro(Vector3* vec) {
 Vector3 readAccel() {
   Wire.beginTransmission(MPU);
   Wire.setClock(1000000);
-  Wire.write(ACCEL_X);
+  Wire.write(MPU_ACCEL_XOUT);
   Wire.endTransmission(false);
   Wire.requestFrom(MPU, 6, true);
   float accelX = (Wire.read() << 8 | Wire.read()) / LSB_PER_G + accelError.x;  // TODO: see if error implementation is necessary
