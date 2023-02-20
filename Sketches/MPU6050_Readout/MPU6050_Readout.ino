@@ -62,17 +62,15 @@ struct Packet {
 
 inline Vector3 add(Vector3 a, Vector3 b) __attribute__((always_inline));
 inline Vector3 multiply(Vector3 v, float scalar) __attribute__((always_inline));
-inline void mapVecToShortArr(short shorts[], Vector3 v, float range) __attribute__((always_inline));
 
 const Vector3 zero = { 0, 0, 0 };
 Vector3 currGyro = zero;
+Vector3Int16 currGyroInt16 = { 0, 0, 0 };
 Vector3 prevGyro = zero;
-short shortBuffer[3] = { 0 };
 
 Packet packet = { { 0, 0, 0 }, SIGNATURE };
 
 // gyro and accelerometer precision
-// TODO: Scale does not work?
 const int FS_SEL = FS_SEL_1;
 const int AFS_SEL = AFS_SEL_1;
 
@@ -81,7 +79,7 @@ const float LSB_PER_G = ACCEL_SCALE_FACTORS[AFS_SEL];
 const int MAX_DEGREES = DEGREES_RANGE[FS_SEL];
 
 // { -565, -248, -42 }
-const Vector3Int16 GYRO_ERROR_Int16 = { -565, -248, -42 };
+const Vector3Int16 GYRO_ERROR_Int16 = { -546, -239, -41 };
 Vector3 gyroError = { -8.623f, -3.785f, -0.642f };
 Vector3 accelError = zero;
 
@@ -152,7 +150,7 @@ void loop() {
   currentMs = millis();
 
   // heartbeat
-  uint8_t lit = ((currentMs & 0x3FF) < 8) ? 0b00010000 : 0;
+  uint8_t lit = ((currentMs & 0x3FF) < 10) ? 0b00100000 : 0;
   PORTB = (PORTB & 0b11011111) | lit;  // clear bit, then set
 
 #ifdef BLE_DEBUG
@@ -162,32 +160,40 @@ void loop() {
 
   int currentMiddleButton = digitalRead(MOUSE_M_PIN);
   if (previousMiddleButton == HIGH && currentMiddleButton == LOW) {
+    Serial.println("Button pressed, turning on");
     lastMovementTimeMs = currentMs;
     awake = true;
   }
+  
   previousMiddleButton = currentMiddleButton;
 
-  if (currentMs - lastMovementTimeMs > 1000L * 60 * SLEEP_TIME_MINS) {
+  if (awake && currentMs - lastMovementTimeMs > 1000L * 2 * SLEEP_TIME_MINS) {
+    Serial.println("Sleep time exceeded, turning off");
     awake = false;
     powerOffBLE();
     powerOffMPU();
   }
 
   if (!awake) return;
+  Serial.println("Past !awake");
+
   if (!isBLEPowered) {
+    Serial.println("Powering on BLE and MPU");
     isBLEPowered = true;
     powerOnBLE();
+    Serial.println("Done setting up BLE");
     powerOnMPU();
   }
 
-  readGyro();
-
+  Serial.println("Reading gyro");
+  readGyroInt16();  // 172 us
+  Serial.println("Read gyro");
+  
   // check for movement
-  /*
-  if (abs(currGyro.x) > degPerSecMovementThreshold || abs(currGyro.y) > degPerSecMovementThreshold || abs(currGyro.z) > degPerSecMovementThreshold) {
+  if (currGyro.x > ANG_VEL_MOVEMENT_THRESHOLD) {
     lastMovementTimeMs = currentMs;
     Serial.println("Movement");
-  }*/
+  }
   /*
   Serial.print(currGyro.x);
   Serial.print("\t");
@@ -201,14 +207,16 @@ void loop() {
     powerOffDevice();
   }*/
 
-  //if (currentMs % 1000 == 0) Serial.println(currUs - prevMicros);
-  //return;
+
+  unsigned long currentUs = micros();
+  diffUs = currentUs - previousUs;
+  previousUs = currentUs;
+
+  //if (currentMs % 1000 == 0) Serial.println(diffUs);
+
 
   if (timerFlag) {
-    unsigned long currentUs = micros();
-    diffUs = currentUs - previousUs;
-    previousUs = currentUs;
-    sendData();
+    //sendData();  // 52 us
     timerFlag = false;
   }
 
@@ -216,14 +224,12 @@ void loop() {
 }
 
 void sendData() {
-  Vector3 gyroSum = add(currGyro, prevGyro);
-  gyroSum = multiply(gyroSum, 0.5f);
+  Serial.write((uint8_t*)&currGyroInt16, sizeof(currGyroInt16));
+
+  //Vector3 gyroSum = add(currGyro, prevGyro);
+  //gyroSum = multiply(gyroSum, 0.5f);
 
   //Vector3 accel = readAccel();
-
-  mapVecToShortArr(shortBuffer, gyroSum, MAX_DEGREES);
-
-  Serial.write((uint8_t*)&shortBuffer, 3 * sizeof(short));
 
   uint8_t buttonData = SIGNATURE | ((digitalRead(MOUSE_M_PIN) == LOW) << 2) | ((digitalRead(MOUSE_L_PIN) == LOW) << 1) | (digitalRead(MOUSE_R_PIN) == LOW);
   Serial.write(buttonData);
@@ -273,7 +279,7 @@ void setupBle() {  // iterate through setup commands and exec
 void powerOnBLE() {
   isBLEPowered = true;
   digitalWrite(BLE_PWR_PIN, HIGH);
-  Serial.begin(BLE_BAUD);
+  //Serial.begin(BLE_BAUD);
 }
 
 void powerOffBLE() {
@@ -284,33 +290,30 @@ void powerOffBLE() {
   //digitalWrite(0, LOW);
 }
 
-// converts a vector3 into a byte array of length 6, with every two bytes representing a short
-// this short is the mapping of -range, +range (a float) to -short.MAX_VALUE, short.MAX_VALUE (32767)
-void mapVecToShortArr(short shorts[], Vector3 v, float range) {
-  shorts[0] = (short)(32767 * v.x / range);
-  shorts[1] = (short)(32767 * v.y / range);
-  shorts[2] = (short)(32767 * v.z / range);
-}
-
 void powerOnMPU() {
   digitalWrite(MPU_PWR_PIN, HIGH);
-  delay(10);
+  delay(200);
+  Serial.println("Setting up MPU");
   setupMPU();
+  Serial.println("Done setting up MPU");
 }
 
 void powerOffMPU() {
   digitalWrite(MPU_PWR_PIN, LOW);
 }
 
-void setupMPU() {
+void setupMPU() { // TODO FIX BUG: somehow the i2c commands don't succeed and are blocking program exec.
   Wire.begin();
   Wire.beginTransmission(MPU);
   Wire.write(MPU_PWR_MGMT_1);    // select the power management register
   Wire.write(MPU_DEVICE_RESET);  // reset device
   Wire.endTransmission(true);
   delay(1);
+  Serial.println("Done resetting MPU"); // doesn't print
   setGyroConfig();
+  Serial.println("Done config gyro MPU");
   setAccelConfig();
+  Serial.println("Done config accel MPU");
 }
 
 void setGyroConfig() {
@@ -340,15 +343,15 @@ void readGyro() {
   currGyro.z = (Wire.read() << 8 | Wire.read()) / LSB_PER_DEG_PER_SEC + gyroError.z;
 }
 
-void readGyroInt16(Vector3Int16* vec) {
+void readGyroInt16() {
   Wire.beginTransmission(MPU);
   Wire.setClock(1000000);
   Wire.write(MPU_GYRO_XOUT);
   Wire.endTransmission(false);
   Wire.requestFrom(MPU, 6, true);  // read the next six registers starting at MPU_GYRO_XOUT
-  vec->x = (Wire.read() << 8 | Wire.read()) + GYRO_ERROR_Int16.x;
-  vec->y = (Wire.read() << 8 | Wire.read()) + GYRO_ERROR_Int16.y;
-  vec->z = (Wire.read() << 8 | Wire.read()) + GYRO_ERROR_Int16.z;
+  currGyroInt16.x = (Wire.read() << 8 | Wire.read()) + GYRO_ERROR_Int16.x;
+  currGyroInt16.y = (Wire.read() << 8 | Wire.read()) + GYRO_ERROR_Int16.y;
+  currGyroInt16.z = (Wire.read() << 8 | Wire.read()) + GYRO_ERROR_Int16.z;
 }
 
 Vector3 readAccel() {
