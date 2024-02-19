@@ -91,9 +91,9 @@ unsigned long previousUs = 0;
 // the time (in ms) when the last movement was recorded
 // a movement has an angular velocity greater than the threshold (in any axis)
 unsigned long lastMovementTimeMs;
-const float DEG_PER_SEC_MOVEMENT_THRESHOLD = 8.0f;
+const float DEG_PER_SEC_MOVEMENT_THRESHOLD = 10.0f;
 const int ANG_VEL_MOVEMENT_THRESHOLD = DEG_PER_SEC_MOVEMENT_THRESHOLD / MAX_DEGREES * 0x7FFF;
-const int SLEEP_TIME_MINS = 1;  // sleep after x minutes of no movement
+const int SLEEP_TIME_MINS = 4;  // sleep after x minutes of no movement
 
 volatile bool awake = false;
 int previousMiddleButton = LOW;
@@ -167,7 +167,7 @@ void loop() {
   
   previousMiddleButton = currentMiddleButton;
 
-  if (awake && currentMs - lastMovementTimeMs > 1000L * 2 * SLEEP_TIME_MINS) {
+  if (awake && currentMs - lastMovementTimeMs > 1000L * 60 * SLEEP_TIME_MINS) {
     Serial.println("Sleep time exceeded, turning off");
     awake = false;
     powerOffBLE();
@@ -175,32 +175,19 @@ void loop() {
   }
 
   if (!awake) return;
-  Serial.println("Past !awake");
 
   if (!isBLEPowered) {
-    Serial.println("Powering on BLE and MPU");
     isBLEPowered = true;
     powerOnBLE();
-    Serial.println("Done setting up BLE");
     powerOnMPU();
   }
 
-  Serial.println("Reading gyro");
   readGyroInt16();  // 172 us
-  Serial.println("Read gyro");
   
   // check for movement
-  if (currGyro.x > ANG_VEL_MOVEMENT_THRESHOLD) {
+  if (currGyroInt16.x > ANG_VEL_MOVEMENT_THRESHOLD) {
     lastMovementTimeMs = currentMs;
-    Serial.println("Movement");
   }
-  /*
-  Serial.print(currGyro.x);
-  Serial.print("\t");
-  Serial.print(currGyro.y);
-  Serial.print("\t");
-  Serial.println(currGyro.z);
-    return;*/
 
   /*
   if (digitalRead(MOUSE_L_PIN) == LOW) {  // testing for sleep functionality
@@ -214,9 +201,8 @@ void loop() {
 
   //if (currentMs % 1000 == 0) Serial.println(diffUs);
 
-
   if (timerFlag) {
-    //sendData();  // 52 us
+    sendData();  // 52 us
     timerFlag = false;
   }
 
@@ -292,28 +278,26 @@ void powerOffBLE() {
 
 void powerOnMPU() {
   digitalWrite(MPU_PWR_PIN, HIGH);
-  delay(200);
-  Serial.println("Setting up MPU");
+  delay(10);
   setupMPU();
-  Serial.println("Done setting up MPU");
 }
 
 void powerOffMPU() {
   digitalWrite(MPU_PWR_PIN, LOW);
 }
 
-void setupMPU() { // TODO FIX BUG: somehow the i2c commands don't succeed and are blocking program exec.
+void setupMPU() {
+  Wire.begin();
+  Wire.end();
+  delay(10);
   Wire.begin();
   Wire.beginTransmission(MPU);
   Wire.write(MPU_PWR_MGMT_1);    // select the power management register
   Wire.write(MPU_DEVICE_RESET);  // reset device
   Wire.endTransmission(true);
   delay(1);
-  Serial.println("Done resetting MPU"); // doesn't print
   setGyroConfig();
-  Serial.println("Done config gyro MPU");
   setAccelConfig();
-  Serial.println("Done config accel MPU");
 }
 
 void setGyroConfig() {
@@ -374,7 +358,7 @@ Vector3 multiply(Vector3 v, float scalar) {
   return { v.x * scalar, v.y * scalar, v.z * scalar };
 }
 
-void DebugFlash() {
+void debugFlash() {
   while (true) {
     digitalWrite(LED_BUILTIN, HIGH);
     delay(50);
