@@ -4,6 +4,8 @@
 #define WRITE_EN 13
 #define EEPROM_WORDS 32768
 #define ERASE_CONFIRMATION 0xBEEF
+#define PAGE_SIZE 64
+#define BUFFER_SIZE 256 // needs to be this value so overflow simplifies operations
 
 enum State : uint8_t {
   Idle,
@@ -26,8 +28,12 @@ uint16_t address = 0;
 uint16_t parameter = 0;
 uint16_t byteCount = 0;
 
-uint8_t page[64];
+uint8_t page[PAGE_SIZE];
 uint8_t pageCount = 0;
+
+uint8_t buffer[BUFFER_SIZE];
+uint8_t bufferStartIndex = 0;
+uint8_t bufferEndIndex = 0;
 
 State currentState = State::Idle;
 Command currentCommand = Command::None;
@@ -39,11 +45,14 @@ Command currentCommand = Command::None;
 // DUMP: d[START_ADDRESS(2)][COUNT(2)] // 4 bytes
 // ERASE: e[ADDRESS(2)] // 2 bytes, note: the address must equal BEEF for successful erase (accidental erase prevention)
 
-// 259 bytes/s write
+// 9.2 bytes/s write
 // 11.8 kilobytes/s read
 
 inline void shiftOutFaster(uint16_t value) __attribute__((always_inline));
 inline uint8_t rawReadEEPROM() __attribute__((always_inline));
+inline uint8_t bufferCount() __attribute__((always_inline));
+inline uint8_t bufferRead() __attribute__((always_inline));
+inline void bufferWrite() __attribute__((always_inline));
 
 void setup() {
   // set data pins direction as input
@@ -64,9 +73,16 @@ void setup() {
 }
 
 void loop() {
-  if (!Serial.available()) return;
+  while (Serial.available() > 0) {
+    if (bufferCount() == 255) break;
+    bufferWrite(Serial.read());
+  }
 
-  uint8_t input = Serial.read();
+  if (bufferCount() == 0) return;
+
+  //if (Serial.available() == 0) return;
+
+  uint8_t input = bufferRead();
 
   if (currentState == State::Idle) {  // input is command char
     bool isValidCommand = false;
@@ -141,15 +157,16 @@ void loop() {
 
     if (currentCommand != Command::Load) return;
 
-    uint8_t pageAddress = address & B00111111;
+    uint8_t pageAddress = address & (PAGE_SIZE - 1);
 
     page[pageAddress] = input;
     pageCount++;
     byteCount++;
+
     Serial.write(Serial.available());
 
     // reached end of page OR end of load, write page
-    if (pageAddress == 63 || byteCount >= parameter + 4) {
+    if (pageAddress == (PAGE_SIZE - 1) || byteCount >= parameter + 4) {
       writePageEEPROM((address + 1) - pageCount, pageCount);
       pageCount = 0;
     }
@@ -273,6 +290,7 @@ void writePageEEPROM(uint16_t startAddress, uint8_t count) {
 
   while (r != lastData) { // wait until the last byte is read back correctly, indicates success
     r = rawReadEEPROM(); // reads EEPROM without setting address, faster
+    bufferSerial();
   }
 }
 
@@ -301,4 +319,25 @@ void shiftOutFaster(uint16_t value) {
   // pin 4 toggle latch
   PORTD |= _BV(PD4);
   PORTD &= ~_BV(PD4);
+}
+
+void bufferSerial() {
+  if (Serial.available() == 0) return;
+  if (bufferCount() == 255) return;
+  bufferWrite(Serial.read());
+}
+
+uint8_t bufferRead() {
+  uint8_t value = buffer[bufferStartIndex];
+  bufferStartIndex++;
+  return value;
+}
+
+void bufferWrite(uint8_t value) {
+  buffer[bufferEndIndex] = value;
+  bufferEndIndex++;
+}
+
+uint8_t bufferCount() {
+  return bufferEndIndex - bufferStartIndex;
 }
